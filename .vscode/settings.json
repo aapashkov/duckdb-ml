@@ -1,0 +1,20 @@
+{
+  "cmake.sourceDirectory": "${workspaceFolder}/duckdb",
+  "cmake.buildDirectory": "${workspaceFolder}/build/debug",
+  "cmake.configureSettings": {
+    "FORCE_COLORED_OUTPUT": "1",
+    "EXTENSION_STATIC_BUILD": "1",
+    "DUCKDB_EXTENSION_CONFIGS": "${workspaceFolder}/extension_config.cmake",
+    "DUCKDB_EXPLICIT_PLATFORM": "",
+    "CUSTOM_LINKER": "",
+    "OVERRIDE_GIT_DESCRIBE": "",
+    "UNITTEST_ROOT_DIRECTORY": "${workspaceFolder}/",
+    "BENCHMARK_ROOT_DIRECTORY": "${workspaceFolder}/",
+    "ENABLE_UNITTEST_CPP_TESTS": "FALSE",
+    "ENABLE_EXTENSION_AUTOLOADING": "0",
+    "ENABLE_EXTENSION_AUTOINSTALL": "0",
+    "BUILD_EXTENSION_TEST_DEPS": "default",
+    "CMAKE_BUILD_TYPE": "Debug"
+  },
+  "cmake.generator": "Ninja"
+}
