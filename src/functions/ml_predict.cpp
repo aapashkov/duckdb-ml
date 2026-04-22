@@ -1,10 +1,10 @@
 // Copyright 2026
 //
-// ml_predict table function for PCA projection with passthrough columns.
+// ml_predict table function for PCA projection.
 //
 // Algorithm: sklearn-like transform using stored PCA model.
 // Library: Eigen.
-// Constraints: output row-count equals input row-count, passthrough maintained.
+// Constraints: output row-count equals input row-count, prediction columns only.
 
 #include "ml/register.hpp"
 
@@ -86,10 +86,6 @@ static unique_ptr<FunctionData> MlPredictBind(ClientContext &, TableFunctionBind
 		names.push_back("principal_component_" + to_string(i + 1));
 		return_types.push_back(LogicalType::DOUBLE);
 	}
-	for (idx_t i = 0; i < input.input_table_types.size(); i++) {
-		names.push_back(input.input_table_names[i]);
-		return_types.push_back(input.input_table_types[i]);
-	}
 	return make_uniq<MlPredictBindData>(std::move(model), std::move(feature_indices));
 }
 
@@ -119,9 +115,6 @@ static OperatorResultType MlPredictFunction(ExecutionContext &, TableFunctionInp
 		for (idx_t row = 0; row < input.size(); row++) {
 			out_ptr[row] = transformed(UnsafeNumericCast<int64_t>(row), UnsafeNumericCast<int64_t>(col));
 		}
-	}
-	for (idx_t col = 0; col < input.ColumnCount(); col++) {
-		output.data[bind_data.model.n_components + col].Reference(input.data[col]);
 	}
 	return OperatorResultType::NEED_MORE_INPUT;
 }

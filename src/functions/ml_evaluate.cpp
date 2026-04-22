@@ -144,16 +144,12 @@ static OperatorFinalizeResultType MlEvaluateFinalize(ExecutionContext &, TableFu
 }
 
 static void MlEvaluateScalarFunction(DataChunk &args, ExpressionState &, Vector &result) {
-	auto out = FlatVector::GetData<double>(result);
-	for (idx_t i = 0; i < args.size(); i++) {
-		auto value = args.data[0].GetValue(i);
-		if (value.IsNull()) {
-			FlatVector::Validity(result).SetInvalid(i);
-			continue;
-		}
-		auto model = DeserializePcaModel(StringValue::Get(value));
-		out[i] = model.training_total_explained_variance_ratio;
-	}
+	auto &model_vector = args.data[0];
+	UnaryExecutor::Execute<string_t, double>(model_vector, result, args.size(), [&](string_t blob_value) {
+		auto model_blob = string(blob_value.GetData(), blob_value.GetSize());
+		auto model = DeserializePcaModel(model_blob);
+		return model.training_total_explained_variance_ratio;
+	});
 }
 
 } // namespace

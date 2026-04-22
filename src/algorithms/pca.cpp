@@ -128,7 +128,7 @@ void IncrementalPca::IncrementalMeanAndVar(const Eigen::Ref<const Eigen::MatrixX
 	auto batch_rows = UnsafeNumericCast<idx_t>(batch.rows());
 	new_sample_count = last_sample_count + batch_rows;
 	Eigen::VectorXd batch_mean = batch.colwise().mean();
-	Eigen::VectorXd centered = batch.rowwise() - batch_mean.transpose();
+	Eigen::MatrixXd centered = batch.rowwise() - batch_mean.transpose();
 	Eigen::VectorXd batch_var = (centered.array().square().colwise().sum() / static_cast<double>(batch_rows)).matrix();
 
 	if (last_sample_count == 0) {

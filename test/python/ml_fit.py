@@ -66,6 +66,15 @@ def test_incremental_pca_parity_with_sklearn():
     model_blob = con.execute(_fit_sql()).fetchone()[0]
     assert model_blob is not None
 
+    pred_schema = con.execute(
+        "DESCRIBE SELECT * FROM ml_predict(?, (SELECT * FROM california_test))",
+        [model_blob],
+    ).fetchall()
+    assert [row[0] for row in pred_schema] == [
+        "principal_component_1",
+        "principal_component_2",
+    ]
+
     ext_cursor = con.execute(
         "SELECT principal_component_1, principal_component_2 "
         "FROM ml_predict(?, (SELECT * FROM california_test))",
