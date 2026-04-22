@@ -1,0 +1,23 @@
+# name: test/sql/ml.test
+# description: test ml extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT ml('Sam');
+----
+Catalog Error: Scalar Function with name ml does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require ml
+
+# Confirm the extension works
+query I
+SELECT ml('Sam');
+----
+Ml Sam 🐥
+
+query I
+SELECT ml_openssl_version('Michael') ILIKE 'Ml Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
