@@ -156,8 +156,9 @@ static OperatorFinalizeResultType MlFitFinalize(ExecutionContext &, TableFunctio
 } // namespace
 
 void RegisterMlFit(ExtensionLoader &loader) {
-	TableFunction fit_fn("ml_fit", {LogicalType::ANY, LogicalType::ANY, LogicalType::TABLE}, nullptr, MlFitBind,
-	                     MlFitInitGlobal, nullptr);
+	vector<LogicalType> fit_args = {LogicalType(LogicalTypeId::ANY), LogicalType(LogicalTypeId::ANY),
+	                                LogicalType(LogicalTypeId::TABLE)};
+	TableFunction fit_fn("ml_fit", fit_args, nullptr, MlFitBind, MlFitInitGlobal, nullptr);
 	fit_fn.in_out_function = MlFitFunction;
 	fit_fn.in_out_function_final = MlFitFinalize;
 	loader.RegisterFunction(std::move(fit_fn));

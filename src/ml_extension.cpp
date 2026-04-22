@@ -5,15 +5,15 @@
 
 namespace duckdb {
 
-static void LoadInternal(ExtensionLoader &loader) {
-	ml::RegisterMlFit(loader);
-	ml::RegisterMlPredict(loader);
-	ml::RegisterMlEvaluate(loader);
-	ml::RegisterMlExplain(loader);
+static void LoadInternal(ExtensionLoader *loader) {
+	ml::RegisterMlFit(*loader);
+	ml::RegisterMlPredict(*loader);
+	ml::RegisterMlEvaluate(*loader);
+	ml::RegisterMlExplain(*loader);
 }
 
 void MlExtension::Load(ExtensionLoader &loader) {
-	LoadInternal(loader);
+	LoadInternal(&loader);
 }
 std::string MlExtension::Name() {
 	return "ml";
@@ -32,6 +32,6 @@ std::string MlExtension::Version() const {
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(ml, loader) {
-	duckdb::LoadInternal(loader);
+	duckdb::LoadInternal(&loader);
 }
 }

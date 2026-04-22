@@ -122,7 +122,8 @@ static OperatorResultType MlPredictFunction(ExecutionContext &, TableFunctionInp
 } // namespace
 
 void RegisterMlPredict(ExtensionLoader &loader) {
-	TableFunction predict_fn("ml_predict", {LogicalType::BLOB, LogicalType::TABLE}, nullptr, MlPredictBind);
+	vector<LogicalType> predict_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
+	TableFunction predict_fn("ml_predict", predict_args, nullptr, MlPredictBind);
 	predict_fn.in_out_function = MlPredictFunction;
 	loader.RegisterFunction(std::move(predict_fn));
 }

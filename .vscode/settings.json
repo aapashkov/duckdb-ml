@@ -1,4 +1,9 @@
 {
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/debug"
+  ],
   "cmake.sourceDirectory": "${workspaceFolder}/duckdb",
   "cmake.buildDirectory": "${workspaceFolder}/build/debug",
   "cmake.configureSettings": {

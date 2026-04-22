@@ -160,8 +160,9 @@ void RegisterMlEvaluate(ExtensionLoader &loader) {
 	                               FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING);
 	loader.RegisterFunction(std::move(evaluate_scalar));
 
-	TableFunction evaluate_table("ml_evaluate", {LogicalType::BLOB, LogicalType::TABLE}, nullptr, MlEvaluateBind,
-	                             MlEvaluateInitGlobal, nullptr);
+	vector<LogicalType> evaluate_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
+	TableFunction evaluate_table("ml_evaluate", evaluate_args, nullptr, MlEvaluateBind, MlEvaluateInitGlobal,
+	                             nullptr);
 	evaluate_table.in_out_function = MlEvaluateFunction;
 	evaluate_table.in_out_function_final = MlEvaluateFinalize;
 	loader.RegisterFunction(std::move(evaluate_table));

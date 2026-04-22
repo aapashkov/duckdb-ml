@@ -38,7 +38,8 @@ static OperatorResultType MlExplainFunction(ExecutionContext &, TableFunctionInp
 } // namespace
 
 void RegisterMlExplain(ExtensionLoader &loader) {
-	TableFunction explain_fn("ml_explain", {LogicalType::BLOB, LogicalType::TABLE}, nullptr, MlExplainBind);
+	vector<LogicalType> explain_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
+	TableFunction explain_fn("ml_explain", explain_args, nullptr, MlExplainBind);
 	explain_fn.in_out_function = MlExplainFunction;
 	loader.RegisterFunction(std::move(explain_fn));
 }

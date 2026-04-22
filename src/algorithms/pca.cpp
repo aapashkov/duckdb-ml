@@ -320,7 +320,8 @@ FitOptions ParseFitOptions(const Value &options_value) {
 	result.num_components = 2;
 	result.whiten = false;
 
-	auto &types = StructType::GetChildTypes(options_value.type());
+	auto options_type = options_value.type();
+	auto &types = StructType::GetChildTypes(options_type);
 	auto &values = StructValue::GetChildren(options_value);
 	bool has_model_type = false;
 	for (idx_t i = 0; i < types.size(); i++) {
