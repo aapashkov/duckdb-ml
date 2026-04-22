@@ -9,6 +9,11 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})
 include_directories(${CMAKE_CURRENT_LIST_DIR}/src/include)
 
+set(EIGEN3_VENDOR_PATH ${CMAKE_CURRENT_LIST_DIR}/third_party/eigen3)
+if(EXISTS "${EIGEN3_VENDOR_PATH}/cmake/Eigen3Config.cmake")
+  list(APPEND CMAKE_PREFIX_PATH "${EIGEN3_VENDOR_PATH}")
+endif()
+
 find_package(Eigen3 REQUIRED NO_MODULE)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
