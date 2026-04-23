@@ -71,7 +71,6 @@ struct BoostedTreeRegressorModel {
 	string booster_type;
 	idx_t max_iterations = 0;
 	vector<string> feature_names;
-	RegressionMetrics training_metrics;
 	string xgboost_model_blob;
 };
 

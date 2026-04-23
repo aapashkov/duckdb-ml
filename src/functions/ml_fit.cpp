@@ -92,7 +92,6 @@ struct MlFitGlobalState : public GlobalTableFunctionState {
 		if (model_type == "pca") {
 			trainer = make_uniq<IncrementalPca>(bind.pca_options.num_components, bind.pca_options.whiten,
 			                                   bind.model_feature_names.size());
-			training_moments = make_uniq<RunningMoments>(bind.model_feature_names.size());
 		} else {
 			cache_dir = CreateBoostedTreeCacheDir();
 		}
@@ -111,7 +110,6 @@ struct MlFitGlobalState : public GlobalTableFunctionState {
 	vector<string> model_feature_names;
 
 	unique_ptr<IncrementalPca> trainer;
-	unique_ptr<RunningMoments> training_moments;
 	vector<double> pending_data;
 
 	string cache_dir;
@@ -136,7 +134,6 @@ static void FlushPendingRows(MlFitGlobalState &state) {
 			    state.pending_data[row * n_features + col];
 		}
 	}
-	state.training_moments->Update(batch);
 	state.trainer->PartialFit(batch);
 	state.pending_data.clear();
 	state.pending_rows = 0;
@@ -292,12 +289,6 @@ static OperatorFinalizeResultType MlFitFinalize(ExecutionContext &, TableFunctio
 			FlatVector::Validity(output.data[0]).SetInvalid(0);
 		} else {
 			auto model = global_state.trainer->ToModel(bind_data.model_feature_names);
-			auto total_var = global_state.training_moments->TotalSampleVariance();
-			if (total_var > 0) {
-				model.training_total_explained_variance_ratio = model.explained_variance.sum() / total_var;
-			} else {
-				model.training_total_explained_variance_ratio = 0.0;
-			}
 			auto blob = SerializePcaModel(model);
 			FlatVector::GetData<string_t>(output.data[0])[0] =
 			    StringVector::AddStringOrBlob(output.data[0], blob.data(), blob.size());

@@ -19,7 +19,7 @@ namespace ml {
 namespace {
 
 static constexpr uint32_t PCA_MAGIC = 0x4d4c5043; // MLPC
-static constexpr uint32_t PCA_VERSION = 1;
+static constexpr uint32_t PCA_VERSION = 2;
 
 struct BlobWriter {
 	template <class T>
@@ -251,7 +251,6 @@ PcaModel IncrementalPca::ToModel(const vector<string> &feature_names) const {
 	model.n_features = n_features_;
 	model.n_components = UnsafeNumericCast<idx_t>(components_.rows());
 	model.n_samples_seen = n_samples_seen_;
-	model.training_total_explained_variance_ratio = explained_variance_ratio_.sum();
 	model.feature_names = feature_names;
 	model.mean = mean_;
 	model.var = var_;
@@ -366,7 +365,6 @@ string SerializePcaModel(const PcaModel &model) {
 	writer.WritePod(static_cast<uint64_t>(model.n_features));
 	writer.WritePod(static_cast<uint64_t>(model.n_components));
 	writer.WritePod(static_cast<uint64_t>(model.n_samples_seen));
-	writer.WritePod(model.training_total_explained_variance_ratio);
 	writer.WritePod(static_cast<uint64_t>(model.feature_names.size()));
 	for (const auto &name : model.feature_names) {
 		writer.WriteString(name);
@@ -385,7 +383,8 @@ PcaModel DeserializePcaModel(const string &blob) {
 	if (reader.ReadPod<uint32_t>() != PCA_MAGIC) {
 		throw InvalidInputException("Invalid PCA model blob: magic mismatch");
 	}
-	if (reader.ReadPod<uint32_t>() != PCA_VERSION) {
+	auto version = reader.ReadPod<uint32_t>();
+	if (version != 1 && version != PCA_VERSION) {
 		throw InvalidInputException("Invalid PCA model blob: unsupported version");
 	}
 	PcaModel model;
@@ -394,7 +393,9 @@ PcaModel DeserializePcaModel(const string &blob) {
 	model.n_features = UnsafeNumericCast<idx_t>(reader.ReadPod<uint64_t>());
 	model.n_components = UnsafeNumericCast<idx_t>(reader.ReadPod<uint64_t>());
 	model.n_samples_seen = UnsafeNumericCast<idx_t>(reader.ReadPod<uint64_t>());
-	model.training_total_explained_variance_ratio = reader.ReadPod<double>();
+	if (version == 1) {
+		reader.ReadPod<double>();
+	}
 	auto feature_count = reader.ReadPod<uint64_t>();
 	model.feature_names.reserve(feature_count);
 	for (uint64_t i = 0; i < feature_count; i++) {

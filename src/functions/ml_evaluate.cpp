@@ -15,7 +15,6 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 
 #include <mutex>
@@ -25,27 +24,25 @@ namespace ml {
 namespace {
 
 struct MlEvaluateBindData : public FunctionData {
-	MlEvaluateBindData(string model_type_p, bool has_input_table_p, PcaModel pca_model_p,
+	MlEvaluateBindData(string model_type_p, PcaModel pca_model_p,
 	                   BoostedTreeRegressorModel boosted_model_p, vector<idx_t> feature_indices_p,
 	                   idx_t label_index_p)
-	    : model_type(std::move(model_type_p)), has_input_table(has_input_table_p), pca_model(std::move(pca_model_p)),
+	    : model_type(std::move(model_type_p)), pca_model(std::move(pca_model_p)),
 	      boosted_model(std::move(boosted_model_p)), feature_indices(std::move(feature_indices_p)),
 	      label_index(label_index_p) {
 	}
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<MlEvaluateBindData>(model_type, has_input_table, pca_model, boosted_model, feature_indices,
+		return make_uniq<MlEvaluateBindData>(model_type, pca_model, boosted_model, feature_indices,
 		                                    label_index);
 	}
 
 	bool Equals(const FunctionData &other) const override {
 		auto &rhs = other.Cast<MlEvaluateBindData>();
-		return model_type == rhs.model_type && has_input_table == rhs.has_input_table &&
-		       feature_indices == rhs.feature_indices && label_index == rhs.label_index;
+		return model_type == rhs.model_type && feature_indices == rhs.feature_indices && label_index == rhs.label_index;
 	}
 
 	string model_type;
-	bool has_input_table;
 	PcaModel pca_model;
 	BoostedTreeRegressorModel boosted_model;
 	vector<idx_t> feature_indices;
@@ -54,9 +51,6 @@ struct MlEvaluateBindData : public FunctionData {
 
 struct MlEvaluateGlobalState : public GlobalTableFunctionState {
 	explicit MlEvaluateGlobalState(const MlEvaluateBindData &bind_data) {
-		if (!bind_data.has_input_table) {
-			return;
-		}
 		if (bind_data.model_type == "pca") {
 			original_moments = make_uniq<RunningMoments>(bind_data.pca_model.n_features);
 			projected_moments = make_uniq<RunningMoments>(bind_data.pca_model.n_components);
@@ -168,7 +162,7 @@ static unique_ptr<FunctionData> MlEvaluateBindWithTable(ClientContext &, TableFu
 		auto feature_indices = ResolveBoostedFeatureIndices(model, input.input_table_names);
 		auto label_index = ResolveLabelIndex(model, input.input_table_names);
 		AddRegressionMetricColumns(return_types, names);
-		return make_uniq<MlEvaluateBindData>("boosted_tree_regressor", true, PcaModel(), std::move(model),
+		return make_uniq<MlEvaluateBindData>("boosted_tree_regressor", PcaModel(), std::move(model),
 		                                    std::move(feature_indices), label_index);
 	}
 
@@ -179,7 +173,7 @@ static unique_ptr<FunctionData> MlEvaluateBindWithTable(ClientContext &, TableFu
 	auto feature_indices = ResolvePcaFeatureIndices(model, input.input_table_names);
 	names.emplace_back("total_explained_variance_ratio");
 	return_types.emplace_back(LogicalType::DOUBLE);
-	return make_uniq<MlEvaluateBindData>("pca", true, std::move(model), BoostedTreeRegressorModel(),
+	return make_uniq<MlEvaluateBindData>("pca", std::move(model), BoostedTreeRegressorModel(),
 	                                    std::move(feature_indices), DConstants::INVALID_INDEX);
 }
 
@@ -265,27 +259,9 @@ static OperatorFinalizeResultType MlEvaluateFinalize(ExecutionContext &, TableFu
 	return OperatorFinalizeResultType::HAVE_MORE_OUTPUT;
 }
 
-static void MlEvaluateScalarFunction(DataChunk &args, ExpressionState &, Vector &result) {
-	auto &model_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, double>(model_vector, result, args.size(), [&](string_t blob_value) {
-		auto model_blob = string(blob_value.GetData(), blob_value.GetSize());
-		if (IsBoostedTreeRegressorModelBlob(model_blob)) {
-			auto model = DeserializeBoostedTreeRegressorModel(model_blob);
-			return model.training_metrics.r2_score;
-		}
-		auto model = DeserializePcaModel(model_blob);
-		return model.training_total_explained_variance_ratio;
-	});
-}
-
 } // namespace
 
 void RegisterMlEvaluate(ExtensionLoader &loader) {
-	ScalarFunction evaluate_scalar("ml_evaluate", {LogicalType::BLOB}, LogicalType::DOUBLE, MlEvaluateScalarFunction,
-	                               nullptr, nullptr, nullptr, nullptr, LogicalType(LogicalTypeId::INVALID),
-	                               FunctionStability::CONSISTENT, FunctionNullHandling::SPECIAL_HANDLING);
-	loader.RegisterFunction(std::move(evaluate_scalar));
-
 	vector<LogicalType> evaluate_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
 	TableFunction evaluate_table("ml_evaluate", evaluate_args, nullptr, MlEvaluateBindWithTable, MlEvaluateInitGlobal,
 	                             nullptr);

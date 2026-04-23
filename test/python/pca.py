@@ -113,7 +113,11 @@ def test_incremental_pca_parity_with_sklearn():
 
         assert np.allclose(ext_pred, sk_pred, rtol=1e-4, atol=1e-4)
 
-        ext_train_ratio = con.execute("SELECT ml_evaluate(?)", [model_blob]).fetchone()[0]
+        ext_train_ratio = con.execute(
+            "SELECT total_explained_variance_ratio "
+            "FROM ml_evaluate(?, (SELECT * FROM california_train))",
+            [model_blob],
+        ).fetchone()[0]
         ext_test_ratio = con.execute(
             "SELECT total_explained_variance_ratio "
             "FROM ml_evaluate(?, (SELECT * FROM california_test))",

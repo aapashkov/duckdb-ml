@@ -25,7 +25,7 @@ namespace ml {
 namespace {
 
 static constexpr uint32_t BTR_MAGIC = 0x4d4c4254; // MLBT
-static constexpr uint32_t BTR_VERSION = 1;
+static constexpr uint32_t BTR_VERSION = 2;
 static constexpr uint32_t BATCH_MAGIC = 0x42545242; // BTRB
 static constexpr idx_t MEDIAN_SAMPLE_CAP = 8192;
 
@@ -186,6 +186,13 @@ static string DenseArrayInterfaceJson(float *data_ptr, idx_t rows, idx_t cols) {
 	return ss.str();
 }
 
+static string DenseVectorArrayInterfaceJson(float *data_ptr, idx_t len) {
+	std::ostringstream ss;
+	ss << "{\"data\":[" << reinterpret_cast<uintptr_t>(data_ptr)
+	   << ", false],\"shape\":[" << len << "],\"strides\":null,\"typestr\":\"<f4\",\"version\":3}";
+	return ss.str();
+}
+
 struct ExternalMemoryIterator {
 	vector<string> batch_files;
 	idx_t n_features;
@@ -212,8 +219,9 @@ static int ExternalMemoryNext(DataIterHandle handle) {
 	}
 
 	auto array_interface = DenseArrayInterfaceJson(iter->current.features.data(), iter->current.n_rows, iter->current.n_features);
+	auto label_interface = DenseVectorArrayInterfaceJson(iter->current.labels.data(), iter->current.n_rows);
 	XGB_CALL(XGProxyDMatrixSetDataDense(iter->proxy, array_interface.c_str()));
-	XGB_CALL(XGDMatrixSetDenseInfo(iter->proxy, "label", iter->current.labels.data(), iter->current.n_rows, 1));
+	XGB_CALL(XGDMatrixSetInfoFromInterface(iter->proxy, "label", label_interface.c_str()));
 
 	iter->current_batch++;
 	return 1;
@@ -468,12 +476,6 @@ string SerializeBoostedTreeRegressorModel(const BoostedTreeRegressorModel &model
 	for (const auto &name : model.feature_names) {
 		writer.WriteString(name);
 	}
-	writer.WritePod(model.training_metrics.mean_absolute_error);
-	writer.WritePod(model.training_metrics.mean_squared_error);
-	writer.WritePod(model.training_metrics.mean_squared_log_error);
-	writer.WritePod(model.training_metrics.median_absolute_error);
-	writer.WritePod(model.training_metrics.r2_score);
-	writer.WritePod(model.training_metrics.explained_variance);
 	writer.WriteString(model.xgboost_model_blob);
 	return writer.blob;
 }
@@ -483,7 +485,8 @@ BoostedTreeRegressorModel DeserializeBoostedTreeRegressorModel(const string &blo
 	if (reader.ReadPod<uint32_t>() != BTR_MAGIC) {
 		throw InvalidInputException("Invalid boosted_tree_regressor model blob: magic mismatch");
 	}
-	if (reader.ReadPod<uint32_t>() != BTR_VERSION) {
+	auto version = reader.ReadPod<uint32_t>();
+	if (version != 1 && version != BTR_VERSION) {
 		throw InvalidInputException("Invalid boosted_tree_regressor model blob: unsupported version");
 	}
 
@@ -497,12 +500,14 @@ BoostedTreeRegressorModel DeserializeBoostedTreeRegressorModel(const string &blo
 	for (idx_t i = 0; i < n_features; i++) {
 		model.feature_names.push_back(reader.ReadString());
 	}
-	model.training_metrics.mean_absolute_error = reader.ReadPod<double>();
-	model.training_metrics.mean_squared_error = reader.ReadPod<double>();
-	model.training_metrics.mean_squared_log_error = reader.ReadPod<double>();
-	model.training_metrics.median_absolute_error = reader.ReadPod<double>();
-	model.training_metrics.r2_score = reader.ReadPod<double>();
-	model.training_metrics.explained_variance = reader.ReadPod<double>();
+	if (version == 1) {
+		reader.ReadPod<double>();
+		reader.ReadPod<double>();
+		reader.ReadPod<double>();
+		reader.ReadPod<double>();
+		reader.ReadPod<double>();
+		reader.ReadPod<double>();
+	}
 	model.xgboost_model_blob = reader.ReadString();
 	if (reader.offset != blob.size()) {
 		throw InvalidInputException("Invalid boosted_tree_regressor model blob: trailing bytes");
@@ -603,15 +608,6 @@ BoostedTreeRegressorModel TrainBoostedTreeRegressorFromBatchFiles(const BoostedT
 		XGB_CALL(XGBoosterUpdateOneIter(booster, i, dtrain));
 	}
 
-	RegressionMetricsAccumulator training_metrics_acc;
-	BatchData batch;
-	for (const auto &batch_file : batch_files) {
-		ReadBoostedTreeBatchFile(batch_file, batch);
-		auto predictions = PredictDenseInternal(booster, batch.features, batch.n_rows, batch.n_features,
-		                                       options.max_iterations, 0);
-		training_metrics_acc.Update(predictions, batch.labels);
-	}
-
 	bst_ulong model_len = 0;
 	const char *model_bytes = nullptr;
 	XGB_CALL(XGBoosterSaveModelToBuffer(booster, "{\"format\":\"ubj\"}", &model_len, &model_bytes));
@@ -622,7 +618,6 @@ BoostedTreeRegressorModel TrainBoostedTreeRegressorFromBatchFiles(const BoostedT
 	model.booster_type = options.booster_type;
 	model.max_iterations = options.max_iterations;
 	model.feature_names = feature_names;
-	model.training_metrics = training_metrics_acc.Finalize();
 	model.xgboost_model_blob.assign(model_bytes, model_len);
 
 	XGB_CALL(XGBoosterFree(booster));

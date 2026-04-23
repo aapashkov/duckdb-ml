@@ -57,13 +57,14 @@ FROM (DESCRIBE SELECT * FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT 
 1
 
 query I
-SELECT ml_evaluate(getvariable('pca_model_blob')) IS NOT NULL;
+SELECT total_explained_variance_ratio IS NOT NULL
+FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_test));
 ----
 1
 
 query I
 SELECT total_explained_variance_ratio IS NOT NULL
-FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_test));
+FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_train));
 ----
 1
 

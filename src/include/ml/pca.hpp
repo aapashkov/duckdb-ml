@@ -26,7 +26,6 @@ struct PcaModel {
 	idx_t n_features = 0;
 	idx_t n_components = 0;
 	idx_t n_samples_seen = 0;
-	double training_total_explained_variance_ratio = 0.0;
 	vector<string> feature_names;
 	Eigen::VectorXd mean;
 	Eigen::VectorXd var;
