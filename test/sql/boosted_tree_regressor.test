@@ -1,0 +1,119 @@
+# name: test/sql/boosted_tree_regressor.test
+# description: test boosted tree regressor model type
+# group: [sql]
+
+require ml
+
+statement ok
+PRAGMA threads=1;
+
+statement ok
+ATTACH 'test/datasets.duckdb' AS ds;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE california AS SELECT * FROM ds.california;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE california_train AS SELECT * FROM california LIMIT 16500;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE california_test AS SELECT * FROM california LIMIT 4140 OFFSET 16500;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE boosted_tree_model AS
+SELECT model
+FROM ml_fit(
+	{'model_type':'boosted_tree_regressor', 'label':'MedHouseVal', 'tree_method':'hist', 'max_iterations':10},
+	NULL,
+	(SELECT * FROM california_train)
+);
+
+statement ok
+SET VARIABLE boosted_tree_model_blob = (SELECT model FROM boosted_tree_model LIMIT 1);
+
+query I
+SELECT octet_length(getvariable('boosted_tree_model_blob')) > 0;
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test));
+----
+4140
+
+query I
+SELECT COUNT(*)
+FROM (DESCRIBE SELECT * FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test)));
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM ml_explain(
+	getvariable('boosted_tree_model_blob'),
+	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude FROM california_test)
+);
+----
+4140
+
+query I
+SELECT COUNT(*)
+FROM (
+	DESCRIBE SELECT *
+	FROM ml_explain(
+		getvariable('boosted_tree_model_blob'),
+		(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude FROM california_test)
+	)
+);
+----
+9
+
+query I
+SELECT COUNT(*)
+FROM (SELECT * FROM ml_evaluate(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test)));
+----
+1
+
+statement error
+SELECT * FROM ml_fit(
+	{'model_type':'boosted_tree_regressor', 'label':'missing_label'},
+	NULL,
+	(SELECT * FROM california_train)
+);
+----
+does not exist
+
+statement error
+SELECT * FROM ml_fit(
+	{'model_type':'boosted_tree_regressor', 'label':'MedHouseVal'},
+	NULL,
+	(SELECT CAST(MedInc AS VARCHAR) AS MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude, MedHouseVal
+	 FROM california_train)
+);
+----
+only supports numeric columns
+
+statement error
+SELECT *
+FROM ml_predict(getvariable('boosted_tree_model_blob'),
+	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude
+	 FROM california_test));
+----
+missing feature column
+
+statement error
+SELECT *
+FROM ml_evaluate(getvariable('boosted_tree_model_blob'),
+	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude
+	 FROM california_test));
+----
+missing label column
+
+statement error
+SELECT *
+FROM ml_explain(getvariable('boosted_tree_model_blob'),
+	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude
+	 FROM california_test));
+----
+missing feature column

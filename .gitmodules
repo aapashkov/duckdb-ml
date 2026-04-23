@@ -9,3 +9,9 @@
 [submodule "third_party/eigen3"]
 	path = third_party/eigen3
 	url = https://gitlab.com/libeigen/eigen.git
+[submodule "third_party/xgboost"]
+	path = third_party/xgboost
+	url = https://github.com/dmlc/xgboost
+[submodule "third_party/shap"]
+	path = third_party/shap
+	url = https://github.com/shap/shap
