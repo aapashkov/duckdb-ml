@@ -19,6 +19,42 @@ CREATE OR REPLACE TEMP TABLE california_train AS SELECT * FROM california LIMIT 
 statement ok
 CREATE OR REPLACE TEMP TABLE california_test AS SELECT * FROM california LIMIT 4140 OFFSET 16500;
 
+query I
+SELECT COUNT(*)
+FROM ml_fit(
+	{'model_type':'boosted_tree_regressor', 'label':'MedHouseVal', 'tree_method':'hist', 'max_iterations':10},
+	NULL,
+	(SELECT * FROM california_train)
+);
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM (
+	DESCRIBE SELECT *
+	FROM ml_fit(
+		{'model_type':'boosted_tree_regressor', 'label':'MedHouseVal', 'tree_method':'hist', 'max_iterations':10},
+		NULL,
+		(SELECT * FROM california_train)
+	)
+);
+----
+1
+
+query I
+SELECT column_name = 'model'
+FROM (
+	DESCRIBE SELECT *
+	FROM ml_fit(
+		{'model_type':'boosted_tree_regressor', 'label':'MedHouseVal', 'tree_method':'hist', 'max_iterations':10},
+		NULL,
+		(SELECT * FROM california_train)
+	)
+);
+----
+1
+
 statement ok
 CREATE OR REPLACE TEMP TABLE boosted_tree_model AS
 SELECT model
@@ -44,7 +80,19 @@ FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT * FROM californi
 
 query I
 SELECT COUNT(*)
+FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT *, 1 AS extra_col FROM california_test));
+----
+4140
+
+query I
+SELECT COUNT(*)
 FROM (DESCRIBE SELECT * FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test)));
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM (DESCRIBE SELECT * FROM ml_predict(getvariable('boosted_tree_model_blob'), (SELECT *, 1 AS extra_col FROM california_test)));
 ----
 1
 
@@ -53,6 +101,15 @@ SELECT COUNT(*)
 FROM ml_explain(
 	getvariable('boosted_tree_model_blob'),
 	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude FROM california_test)
+);
+----
+4140
+
+query I
+SELECT COUNT(*)
+FROM ml_explain(
+	getvariable('boosted_tree_model_blob'),
+	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude, 1 AS extra_col FROM california_test)
 );
 ----
 4140
@@ -72,6 +129,18 @@ FROM (
 query I
 SELECT COUNT(*)
 FROM (SELECT * FROM ml_evaluate(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test)));
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM (DESCRIBE SELECT * FROM ml_evaluate(getvariable('boosted_tree_model_blob'), (SELECT * FROM california_test)));
+----
+6
+
+query I
+SELECT COUNT(*)
+FROM (SELECT * FROM ml_evaluate(getvariable('boosted_tree_model_blob'), (SELECT *, 1 AS extra_col FROM california_test)));
 ----
 1
 

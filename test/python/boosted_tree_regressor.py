@@ -40,41 +40,27 @@ def _connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _load_numpy_data(con: duckdb.DuckDBPyConnection):
-    train_query = (
-        f"SELECT {', '.join(FEATURE_COLUMNS)}, {LABEL_COLUMN} "
-        "FROM california_train"
-    )
-    test_query = f"SELECT {', '.join(FEATURE_COLUMNS)}, {LABEL_COLUMN} FROM california_test"
-
-    train_df = con.execute(train_query).fetchdf()
-    test_df = con.execute(test_query).fetchdf()
-
-    x_train = train_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32, copy=False)
-    y_train = train_df[LABEL_COLUMN].to_numpy(dtype=np.float32, copy=False)
-    x_test = test_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32, copy=False)
-    y_test = test_df[LABEL_COLUMN].to_numpy(dtype=np.float32, copy=False)
-    return x_train, y_train, x_test, y_test
-
-
-def _make_data_iter(xgb_module, x_data, y_data, batch_size, cache_prefix):
+def _make_data_iter(xgb_module, con: duckdb.DuckDBPyConnection, table_name: str, cache_prefix: str):
     class NumpyDataIter(xgb_module.DataIter):
         def __init__(self):
-            self._x_data = x_data
-            self._y_data = y_data
-            self._batch_size = batch_size
-            self._offset = 0
+            self._con = con
+            self._query = (
+                f"SELECT {', '.join(FEATURE_COLUMNS)}, {LABEL_COLUMN} "
+                f"FROM {table_name}"
+            )
+            self._cursor = None
             super().__init__(cache_prefix=cache_prefix)
 
         def reset(self):
-            self._offset = 0
+            self._cursor = self._con.execute(self._query)
 
         def next(self, input_data):
-            if self._offset >= self._x_data.shape[0]:
+            chunk_df = self._cursor.fetch_df_chunk()
+            if chunk_df.empty:
                 return False
-            end = min(self._offset + self._batch_size, self._x_data.shape[0])
-            input_data(data=self._x_data[self._offset:end], label=self._y_data[self._offset:end])
-            self._offset = end
+            x_chunk = chunk_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32, copy=False)
+            y_chunk = chunk_df[LABEL_COLUMN].to_numpy(dtype=np.float32, copy=False)
+            input_data(data=x_chunk, label=y_chunk)
             return True
 
     return NumpyDataIter()
@@ -89,12 +75,12 @@ def _fit_extension_model(con: duckdb.DuckDBPyConnection, tree_method: str):
     return con.execute(sql).fetchone()[0]
 
 
-def _train_python_xgboost(tree_method: str, x_train, y_train):
+def _train_python_xgboost(con: duckdb.DuckDBPyConnection, tree_method: str):
     xgb = pytest.importorskip("xgboost")
 
     cache_dir = tempfile.mkdtemp(prefix="xgb_extmem_")
     try:
-        iterator = _make_data_iter(xgb, x_train, y_train, 2048, os.path.join(cache_dir, "cache"))
+        iterator = _make_data_iter(xgb, con, "california_train", os.path.join(cache_dir, "cache"))
         if tree_method == "hist":
             dtrain = xgb.ExtMemQuantileDMatrix(iterator)
         else:
@@ -124,47 +110,140 @@ def _train_python_xgboost(tree_method: str, x_train, y_train):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray):
-    err = y_true - y_pred
-    abs_err = np.abs(err)
-    y_true_safe = np.clip(y_true, 0.0, None)
-    y_pred_safe = np.clip(y_pred, 0.0, None)
-    log_err = np.log1p(y_true_safe) - np.log1p(y_pred_safe)
+class _CorrelationAccumulator:
+    def __init__(self):
+        self.n = 0
+        self.sum_x = 0.0
+        self.sum_y = 0.0
+        self.sum_x2 = 0.0
+        self.sum_y2 = 0.0
+        self.sum_xy = 0.0
 
-    y_var = np.var(y_true)
-    err_var = np.var(err)
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    def update(self, x: np.ndarray, y: np.ndarray) -> None:
+        self.n += x.size
+        self.sum_x += float(np.sum(x))
+        self.sum_y += float(np.sum(y))
+        self.sum_x2 += float(np.sum(x * x))
+        self.sum_y2 += float(np.sum(y * y))
+        self.sum_xy += float(np.sum(x * y))
 
-    return {
-        "mean_absolute_error": float(np.mean(abs_err)),
-        "mean_squared_error": float(np.mean(err**2)),
-        "mean_squared_log_error": float(np.mean(log_err**2)),
-        "median_absolute_error": float(np.median(abs_err)),
-        "r2_score": float(1.0 - (np.sum(err**2) / ss_tot) if ss_tot > 0 else 0.0),
-        "explained_variance": float(1.0 - (err_var / y_var) if y_var > 0 else 0.0),
-    }
+    def finalize(self) -> float:
+        num = (self.n * self.sum_xy) - (self.sum_x * self.sum_y)
+        den_x = (self.n * self.sum_x2) - (self.sum_x * self.sum_x)
+        den_y = (self.n * self.sum_y2) - (self.sum_y * self.sum_y)
+        den = float(np.sqrt(max(den_x, 0.0) * max(den_y, 0.0)))
+        if den == 0.0:
+            return 0.0
+        return num / den
+
+
+class _RegressionAccumulator:
+    def __init__(self):
+        self.n = 0
+        self.sum_abs_error = 0.0
+        self.sum_sq_error = 0.0
+        self.sum_sq_log_error = 0.0
+        self.sum_y = 0.0
+        self.sum_y2 = 0.0
+        self.sum_err = 0.0
+        self.sum_err2 = 0.0
+        self.abs_errors = []
+
+    def update(self, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+        err = y_true - y_pred
+        abs_err = np.abs(err)
+        y_true_safe = np.clip(y_true, 0.0, None)
+        y_pred_safe = np.clip(y_pred, 0.0, None)
+        log_err = np.log1p(y_true_safe) - np.log1p(y_pred_safe)
+
+        self.n += y_true.size
+        self.sum_abs_error += float(np.sum(abs_err))
+        self.sum_sq_error += float(np.sum(err**2))
+        self.sum_sq_log_error += float(np.sum(log_err**2))
+        self.sum_y += float(np.sum(y_true))
+        self.sum_y2 += float(np.sum(y_true * y_true))
+        self.sum_err += float(np.sum(err))
+        self.sum_err2 += float(np.sum(err * err))
+        self.abs_errors.extend(abs_err.tolist())
+
+    def finalize(self):
+        if self.n == 0:
+            return {
+                "mean_absolute_error": 0.0,
+                "mean_squared_error": 0.0,
+                "mean_squared_log_error": 0.0,
+                "median_absolute_error": 0.0,
+                "r2_score": 0.0,
+                "explained_variance": 0.0,
+            }
+
+        n = float(self.n)
+        y_mean = self.sum_y / n
+        ss_tot = max(0.0, self.sum_y2 - n * y_mean * y_mean)
+        y_var = max(0.0, (self.sum_y2 / n) - (y_mean * y_mean))
+        err_mean = self.sum_err / n
+        err_var = max(0.0, (self.sum_err2 / n) - (err_mean * err_mean))
+
+        return {
+            "mean_absolute_error": self.sum_abs_error / n,
+            "mean_squared_error": self.sum_sq_error / n,
+            "mean_squared_log_error": self.sum_sq_log_error / n,
+            "median_absolute_error": float(np.median(np.asarray(self.abs_errors, dtype=np.float64))),
+            "r2_score": float(1.0 - (self.sum_sq_error / ss_tot) if ss_tot > 0 else 0.0),
+            "explained_variance": float(1.0 - (err_var / y_var) if y_var > 0 else 0.0),
+        }
 
 
 @pytest.mark.parametrize("tree_method", ["hist", "approx"])
 def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
     con = _connect()
     try:
-        x_train, y_train, x_test, y_test = _load_numpy_data(con)
-
         model_blob = _fit_extension_model(con, tree_method)
         assert model_blob is not None
 
-        ext_pred = con.execute(
-            f"SELECT {LABEL_COLUMN} FROM ml_predict(?, (SELECT * FROM california_test))",
+        con.execute(
+            "CREATE TEMP TABLE btr_test_with_id AS "
+            "SELECT row_number() OVER () AS rid, * FROM california_test"
+        )
+        con.execute(
+            "CREATE TEMP TABLE btr_ext_pred_with_id AS "
+            "SELECT row_number() OVER () AS rid, * "
+            "FROM ml_predict(?, (SELECT * FROM california_test))",
             [model_blob],
-        ).fetchnumpy()[LABEL_COLUMN].astype(np.float32)
+        )
 
-        booster = _train_python_xgboost(tree_method, x_train, y_train)
+        booster = _train_python_xgboost(con, tree_method)
         xgb = pytest.importorskip("xgboost")
-        dtest = xgb.DMatrix(x_test, feature_names=FEATURE_COLUMNS)
-        py_pred = booster.predict(dtest, iteration_range=(0, 10)).astype(np.float32)
 
-        corr = float(np.corrcoef(ext_pred, py_pred)[0, 1])
+        corr_acc = _CorrelationAccumulator()
+        metrics_acc = _RegressionAccumulator()
+        comparison_query = (
+            "SELECT "
+            + ", ".join([f"t.{feature}" for feature in FEATURE_COLUMNS])
+            + f", t.{LABEL_COLUMN} AS label, p.{LABEL_COLUMN} AS ext_pred "
+            "FROM btr_test_with_id t "
+            "JOIN btr_ext_pred_with_id p USING (rid) "
+            "ORDER BY rid"
+        )
+        comparison_cursor = con.execute(comparison_query)
+        total_rows = 0
+        while True:
+            chunk_df = comparison_cursor.fetch_df_chunk()
+            if chunk_df.empty:
+                break
+            x_chunk = chunk_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32, copy=False)
+            y_chunk = chunk_df["label"].to_numpy(dtype=np.float64, copy=False)
+            ext_chunk = chunk_df["ext_pred"].to_numpy(dtype=np.float32, copy=False)
+            py_chunk = booster.predict(
+                xgb.DMatrix(x_chunk, feature_names=FEATURE_COLUMNS),
+                iteration_range=(0, 10),
+            ).astype(np.float32)
+            corr_acc.update(ext_chunk, py_chunk)
+            metrics_acc.update(y_chunk, ext_chunk.astype(np.float64))
+            total_rows += x_chunk.shape[0]
+
+        assert total_rows == 4140
+        corr = corr_acc.finalize()
         assert corr > 0.98
 
         explain_cols = ["baseline_prediction_value"] + [f"{name}_attribution" for name in FEATURE_COLUMNS]
@@ -196,7 +275,7 @@ def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
             "explained_variance": float(eval_row[5]),
         }
 
-        ext_metrics_expected = _compute_metrics(y_test.astype(np.float64), ext_pred.astype(np.float64))
+        ext_metrics_expected = metrics_acc.finalize()
         for key, value in ext_metrics_expected.items():
             assert np.isclose(ext_metrics[key], value, rtol=5e-3, atol=5e-3)
     finally:

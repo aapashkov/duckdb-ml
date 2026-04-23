@@ -35,16 +35,24 @@ def _feature_query(table_name: str) -> str:
     return f"SELECT {', '.join(FEATURE_COLUMNS)} FROM {table_name}"
 
 
-def _collect_chunks_to_numpy(cursor) -> np.ndarray:
-    chunks = []
-    while True:
-        chunk_df = cursor.fetch_df_chunk()
-        if chunk_df.empty:
-            break
-        chunks.append(chunk_df.to_numpy(dtype=np.float64, copy=False))
-    if not chunks:
-        return np.empty((0, 0), dtype=np.float64)
-    return np.vstack(chunks)
+class _RunningMoments:
+    def __init__(self, dimensions: int):
+        self.n = 0
+        self.mean = np.zeros((dimensions,), dtype=np.float64)
+        self.m2 = np.zeros((dimensions,), dtype=np.float64)
+
+    def update(self, batch: np.ndarray) -> None:
+        for row in batch:
+            self.n += 1
+            delta = row - self.mean
+            self.mean += delta / self.n
+            delta2 = row - self.mean
+            self.m2 += delta * delta2
+
+    def total_sample_variance(self) -> float:
+        if self.n < 2:
+            return 0.0
+        return float(np.sum(self.m2 / (self.n - 1)))
 
 
 def test_incremental_pca_parity_with_sklearn():
@@ -76,14 +84,19 @@ def test_incremental_pca_parity_with_sklearn():
             "principal_component_2",
         ]
 
-        ext_cursor = con.execute(
-            "SELECT principal_component_1, principal_component_2 "
+        con.execute(
+            "CREATE TEMP TABLE pca_test_with_id AS "
+            "SELECT row_number() OVER () AS rid, * FROM california_test"
+        )
+        con.execute(
+            "CREATE TEMP TABLE pca_ext_pred_with_id AS "
+            "SELECT row_number() OVER () AS rid, * "
             "FROM ml_predict(?, (SELECT * FROM california_test))",
             [model_blob],
         )
-        ext_pred = _collect_chunks_to_numpy(ext_cursor)
-        assert ext_pred.shape[0] == 4140
-        assert ext_pred.shape[1] == 2
+
+        pred_count = con.execute("SELECT COUNT(*) FROM pca_ext_pred_with_id").fetchone()[0]
+        assert pred_count == 4140
 
         ipca = IncrementalPCA(n_components=2, whiten=False)
         train_cursor = con.execute(_feature_query("california_train"))
@@ -93,25 +106,50 @@ def test_incremental_pca_parity_with_sklearn():
                 break
             ipca.partial_fit(chunk_df.to_numpy(dtype=np.float64, copy=False))
 
-        sklearn_preds = []
-        test_batches = []
-        test_cursor = con.execute(_feature_query("california_test"))
+        joined_query = (
+            "SELECT "
+            + ", ".join([f"t.{col}" for col in FEATURE_COLUMNS])
+            + ", p.principal_component_1, p.principal_component_2 "
+            "FROM pca_test_with_id t "
+            "JOIN pca_ext_pred_with_id p USING (rid) "
+            "ORDER BY rid"
+        )
+
+        dot_sum = np.zeros((2,), dtype=np.float64)
+        pass1_cursor = con.execute(joined_query)
         while True:
-            chunk_df = test_cursor.fetch_df_chunk()
+            chunk_df = pass1_cursor.fetch_df_chunk()
             if chunk_df.empty:
                 break
-            chunk_np = chunk_df.to_numpy(dtype=np.float64, copy=False)
-            test_batches.append(chunk_np)
-            sklearn_preds.append(ipca.transform(chunk_np))
+            x_chunk = chunk_df[FEATURE_COLUMNS].to_numpy(dtype=np.float64, copy=False)
+            ext_chunk = chunk_df[["principal_component_1", "principal_component_2"]].to_numpy(
+                dtype=np.float64, copy=False
+            )
+            sk_chunk = ipca.transform(x_chunk)
+            dot_sum += np.sum(ext_chunk * sk_chunk, axis=0)
 
-        sk_pred = np.vstack(sklearn_preds)
-        x_test = np.vstack(test_batches)
+        signs = np.where(dot_sum < 0.0, -1.0, 1.0)
 
-        for component_idx in range(2):
-            if np.dot(ext_pred[:, component_idx], sk_pred[:, component_idx]) < 0:
-                ext_pred[:, component_idx] *= -1
+        original_moments = _RunningMoments(len(FEATURE_COLUMNS))
+        projected_moments = _RunningMoments(2)
+        total_rows = 0
+        pass2_cursor = con.execute(joined_query)
+        while True:
+            chunk_df = pass2_cursor.fetch_df_chunk()
+            if chunk_df.empty:
+                break
+            x_chunk = chunk_df[FEATURE_COLUMNS].to_numpy(dtype=np.float64, copy=False)
+            ext_chunk = chunk_df[["principal_component_1", "principal_component_2"]].to_numpy(
+                dtype=np.float64, copy=False
+            )
+            sk_chunk = ipca.transform(x_chunk)
+            aligned_ext = ext_chunk * signs
+            assert np.allclose(aligned_ext, sk_chunk, rtol=1e-4, atol=1e-4)
+            original_moments.update(x_chunk)
+            projected_moments.update(sk_chunk)
+            total_rows += x_chunk.shape[0]
 
-        assert np.allclose(ext_pred, sk_pred, rtol=1e-4, atol=1e-4)
+        assert total_rows == 4140
 
         ext_train_ratio = con.execute(
             "SELECT total_explained_variance_ratio "
@@ -125,11 +163,9 @@ def test_incremental_pca_parity_with_sklearn():
         ).fetchone()[0]
 
         sk_train_ratio = float(np.sum(ipca.explained_variance_ratio_))
-        centered = x_test - x_test.mean(axis=0, keepdims=True)
-        projected = centered @ ipca.components_.T
-        sk_test_ratio = float(
-            projected.var(axis=0, ddof=1).sum() / centered.var(axis=0, ddof=1).sum()
-        )
+        total_var = original_moments.total_sample_variance()
+        explained_var = projected_moments.total_sample_variance()
+        sk_test_ratio = float(explained_var / total_var) if total_var > 0.0 else 0.0
 
         assert np.isclose(ext_train_ratio, sk_train_ratio, rtol=1e-4, atol=1e-4)
         assert np.isclose(ext_test_ratio, sk_test_ratio, rtol=1e-4, atol=1e-4)
