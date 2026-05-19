@@ -21,7 +21,7 @@ CREATE OR REPLACE TEMP TABLE california_test AS SELECT * FROM california LIMIT 4
 
 query I
 SELECT COUNT(*)
-FROM ml_fit({'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
+FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 			(SELECT * FROM california_train));
 ----
 1
@@ -29,27 +29,30 @@ FROM ml_fit({'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 query I
 SELECT COUNT(*)
 FROM (DESCRIBE SELECT *
-	  FROM ml_fit({'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
+	  FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 				 (SELECT * FROM california_train)));
 ----
-1
+3
 
 query I
-SELECT column_name = 'model'
+SELECT COUNT(*)
 FROM (DESCRIBE SELECT *
-	  FROM ml_fit({'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
+	  FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 				 (SELECT * FROM california_train)));
 ----
-1
+3
 
 statement ok
-CREATE OR REPLACE TEMP TABLE pca_model AS
-SELECT model
-FROM ml_fit({'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
+CREATE OR REPLACE TEMP TABLE pca_fit_v1 AS
+SELECT *
+FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 			(SELECT * FROM california_train));
 
 statement ok
-SET VARIABLE pca_model_blob = (SELECT model FROM pca_model LIMIT 1);
+CREATE OR REPLACE TEMP TABLE pca_fit_v2 AS
+SELECT *
+FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
+			(SELECT * FROM california_train));
 
 query I
 SELECT COUNT(*) FROM california;
@@ -57,77 +60,90 @@ SELECT COUNT(*) FROM california;
 20640
 
 query I
-SELECT octet_length(getvariable('pca_model_blob')) > 0;
+SELECT (SELECT version FROM pca_fit_v2 LIMIT 1) = (SELECT version FROM pca_fit_v1 LIMIT 1) + 1;
 ----
 1
 
 query I
 SELECT COUNT(*)
-FROM ml_predict(getvariable('pca_model_blob'), (SELECT * FROM california_test));
+FROM ml_predict('pca_california', (SELECT * FROM california_test));
 ----
 4140
 
 query I
 SELECT COUNT(*)
-FROM ml_predict(getvariable('pca_model_blob'), (SELECT *, 1 AS extra_col FROM california_test));
+FROM ml_predict('pca_california', (SELECT *, 1 AS extra_col FROM california_test), version = 0);
 ----
 4140
 
 query I
 SELECT COUNT(*)
-FROM (DESCRIBE SELECT * FROM ml_predict(getvariable('pca_model_blob'), (SELECT * FROM california_test)));
+FROM ml_predict('pca_california', (SELECT * FROM california_test),
+	version = 1);
+----
+4140
+
+query I
+SELECT COUNT(*)
+FROM (DESCRIBE SELECT * FROM ml_predict('pca_california', (SELECT * FROM california_test)));
 ----
 2
 
 query I
 SELECT COUNT(*)
-FROM (DESCRIBE SELECT * FROM ml_predict(getvariable('pca_model_blob'), (SELECT *, 1 AS extra_col FROM california_test)));
+FROM (DESCRIBE SELECT * FROM ml_predict('pca_california', (SELECT *, 1 AS extra_col FROM california_test)));
 ----
 2
 
 query I
 SELECT COUNT(*)
-FROM (DESCRIBE SELECT * FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_test)));
+FROM (DESCRIBE SELECT * FROM ml_evaluate('pca_california', (SELECT * FROM california_test)));
 ----
 1
 
 query I
 SELECT total_explained_variance_ratio IS NOT NULL
-FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_test));
+FROM ml_evaluate('pca_california', (SELECT * FROM california_test));
 ----
 1
 
 query I
 SELECT total_explained_variance_ratio IS NOT NULL
-FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT *, 1 AS extra_col FROM california_test));
+FROM ml_evaluate('pca_california', (SELECT *, 1 AS extra_col FROM california_test), version = 0);
 ----
 1
 
 query I
 SELECT total_explained_variance_ratio IS NOT NULL
-FROM ml_evaluate(getvariable('pca_model_blob'), (SELECT * FROM california_train));
+FROM ml_evaluate('pca_california', (SELECT * FROM california_train),
+	version = 1);
 ----
 1
 
 statement error
-SELECT * FROM ml_fit({'model_type':'unknown'}, NULL, (SELECT MedInc FROM california_train));
+SELECT * FROM ml_fit('unknown_model_type_test', {'model_type':'unknown'}, NULL, (SELECT MedInc FROM california_train));
 ----
 Unsupported model_type
 
 statement error
-SELECT * FROM ml_explain(getvariable('pca_model_blob'), (SELECT * FROM california_test));
+SELECT * FROM ml_explain('pca_california', (SELECT * FROM california_test));
 ----
 ml_explain is not supported
 
 statement error
-SELECT * FROM ml_predict(getvariable('pca_model_blob'),
+SELECT * FROM ml_predict('missing_pca_model_name', (SELECT * FROM california_test));
+----
+No trained model named
+
+statement error
+SELECT * FROM ml_predict('pca_california',
 	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude
 	 FROM california_test));
 ----
 missing feature column
 
 statement error
-SELECT * FROM ml_evaluate(getvariable('pca_model_blob'),
+SELECT * FROM ml_evaluate('pca_california',
 	(SELECT MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude
 	 FROM california_test));
 ----

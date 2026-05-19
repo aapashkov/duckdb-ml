@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 
 import duckdb
@@ -22,10 +24,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _fit_sql() -> str:
+def _fit_sql(model_name: str) -> str:
     return (
-        "SELECT model "
+        "SELECT model, version, timestamp "
         "FROM ml_fit("
+        f"'{model_name}', "
         "{'model_type':'pca', 'num_components':2, 'whiten':false}, NULL, "
         "(SELECT * FROM california_train))"
     )
@@ -58,10 +61,15 @@ class _RunningMoments:
 def test_incremental_pca_parity_with_sklearn():
     sklearn_decomp = pytest.importorskip("sklearn.decomposition")
     IncrementalPCA = sklearn_decomp.IncrementalPCA
+    model_name = "pca_python_parity"
 
     root = _repo_root()
     ext_path = root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
     dataset_path = root / "test" / "datasets.duckdb"
+
+    prev_project_db_path = os.environ.get("PROJECT_DB_PATH")
+    temp_db_dir = tempfile.TemporaryDirectory(prefix="duckdb_ml_pca_registry_")
+    os.environ["PROJECT_DB_PATH"] = str(Path(temp_db_dir.name) / "registry.db")
 
     con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true"})
     try:
@@ -72,12 +80,16 @@ def test_incremental_pca_parity_with_sklearn():
         con.execute("CREATE TEMP TABLE california_train AS SELECT * FROM california LIMIT 16500")
         con.execute("CREATE TEMP TABLE california_test AS SELECT * FROM california LIMIT 4140 OFFSET 16500")
 
-        model_blob = con.execute(_fit_sql()).fetchone()[0]
-        assert model_blob is not None
+        fit_row = con.execute(_fit_sql(model_name)).fetchone()
+        assert fit_row is not None
+        assert fit_row[0] == model_name
+        assert fit_row[1] >= 1
+        assert fit_row[2] is not None
+        model_version = int(fit_row[1])
 
         pred_schema = con.execute(
             "DESCRIBE SELECT * FROM ml_predict(?, (SELECT * FROM california_test))",
-            [model_blob],
+            [model_name],
         ).fetchall()
         assert [row[0] for row in pred_schema] == [
             "principal_component_1",
@@ -92,7 +104,7 @@ def test_incremental_pca_parity_with_sklearn():
             "CREATE TEMP TABLE pca_ext_pred_with_id AS "
             "SELECT row_number() OVER () AS rid, * "
             "FROM ml_predict(?, (SELECT * FROM california_test))",
-            [model_blob],
+            [model_name],
         )
 
         pred_count = con.execute("SELECT COUNT(*) FROM pca_ext_pred_with_id").fetchone()[0]
@@ -153,13 +165,13 @@ def test_incremental_pca_parity_with_sklearn():
 
         ext_train_ratio = con.execute(
             "SELECT total_explained_variance_ratio "
-            "FROM ml_evaluate(?, (SELECT * FROM california_train))",
-            [model_blob],
+            f"FROM ml_evaluate(?, (SELECT * FROM california_train), version = {model_version})",
+            [model_name],
         ).fetchone()[0]
         ext_test_ratio = con.execute(
             "SELECT total_explained_variance_ratio "
             "FROM ml_evaluate(?, (SELECT * FROM california_test))",
-            [model_blob],
+            [model_name],
         ).fetchone()[0]
 
         sk_train_ratio = float(np.sum(ipca.explained_variance_ratio_))
@@ -171,3 +183,8 @@ def test_incremental_pca_parity_with_sklearn():
         assert np.isclose(ext_test_ratio, sk_test_ratio, rtol=1e-4, atol=1e-4)
     finally:
         con.close()
+        if prev_project_db_path is None:
+            os.environ.pop("PROJECT_DB_PATH", None)
+        else:
+            os.environ["PROJECT_DB_PATH"] = prev_project_db_path
+        temp_db_dir.cleanup()

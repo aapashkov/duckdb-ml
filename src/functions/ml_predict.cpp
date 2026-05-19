@@ -9,6 +9,7 @@
 #include "ml/register.hpp"
 
 #include "ml/boosted_tree_regressor.hpp"
+#include "ml/model_registry.hpp"
 #include "ml/pca.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -100,12 +101,42 @@ static vector<idx_t> ResolveFeatureIndices(const BoostedTreeRegressorModel &mode
 	return indices;
 }
 
+static string ReadModelName(const Value &value) {
+	if (value.IsNull()) {
+		throw InvalidInputException("ml_predict requires a non-NULL model name");
+	}
+	auto model_name = StringValue::Get(value);
+	StringUtil::Trim(model_name);
+	if (model_name.empty()) {
+		throw InvalidInputException("ml_predict requires a non-empty model name");
+	}
+	return model_name;
+}
+
+static idx_t ReadRequestedVersion(TableFunctionBindInput &input) {
+	auto entry = input.named_parameters.find("version");
+	if (entry == input.named_parameters.end()) {
+		return 0;
+	}
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("ml_predict version must be a non-NULL integer");
+	}
+	auto raw_version = BigIntValue::Get(entry->second.DefaultCastAs(LogicalType::BIGINT));
+	if (raw_version < 0) {
+		throw InvalidInputException("ml_predict version must be >= 0");
+	}
+	return UnsafeNumericCast<idx_t>(raw_version);
+}
+
 static unique_ptr<FunctionData> MlPredictBind(ClientContext &, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs.empty() || input.inputs[0].IsNull()) {
-		throw InvalidInputException("ml_predict requires a non-NULL model blob");
+	if (input.inputs.empty()) {
+		throw InvalidInputException("ml_predict requires a model name argument");
 	}
-	auto model_blob = StringValue::Get(input.inputs[0]);
+	auto model_name = ReadModelName(input.inputs[0]);
+	auto version = ReadRequestedVersion(input);
+	auto lookup = LoadModelRegistryEntry(model_name, version);
+	auto model_blob = lookup.blob;
 	if (input.input_table_types.empty()) {
 		throw InvalidInputException("ml_predict requires a TABLE input");
 	}
@@ -194,10 +225,11 @@ static OperatorResultType MlPredictFunction(ExecutionContext &, TableFunctionInp
 } // namespace
 
 void RegisterMlPredict(ExtensionLoader &loader) {
-	vector<LogicalType> predict_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
-	TableFunction predict_fn("ml_predict", predict_args, nullptr, MlPredictBind, MlPredictInitGlobal, nullptr);
-	predict_fn.in_out_function = MlPredictFunction;
-	loader.RegisterFunction(std::move(predict_fn));
+	vector<LogicalType> predict_args = {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::TABLE)};
+	TableFunction predict("ml_predict", predict_args, nullptr, MlPredictBind, MlPredictInitGlobal, nullptr);
+	predict.named_parameters["version"] = LogicalType::BIGINT;
+	predict.in_out_function = MlPredictFunction;
+	loader.RegisterFunction(std::move(predict));
 }
 
 } // namespace ml

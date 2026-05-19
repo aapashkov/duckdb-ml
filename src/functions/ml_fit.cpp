@@ -9,14 +9,15 @@
 #include "ml/register.hpp"
 
 #include "ml/boosted_tree_regressor.hpp"
+#include "ml/model_registry.hpp"
 #include "ml/pca.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 
-#include <chrono>
 #include <mutex>
+#include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -58,26 +59,100 @@ static string CreateBoostedTreeCacheDir() {
 	return cache_dir;
 }
 
+static string EscapeJsonString(const string &value) {
+	string escaped;
+	escaped.reserve(value.size() + 8);
+	for (auto ch : value) {
+		switch (ch) {
+		case '\\':
+			escaped += "\\\\";
+			break;
+		case '"':
+			escaped += "\\\"";
+			break;
+		case '\n':
+			escaped += "\\n";
+			break;
+		case '\r':
+			escaped += "\\r";
+			break;
+		case '\t':
+			escaped += "\\t";
+			break;
+		default:
+			escaped.push_back(ch);
+			break;
+		}
+	}
+	return escaped;
+}
+
+static string BuildTableProvenance(TableFunctionBindInput &input) {
+	vector<string> source_names = input.input_table_names;
+	if (source_names.empty()) {
+		source_names.reserve(input.input_table_types.size());
+		for (idx_t i = 0; i < input.input_table_types.size(); i++) {
+			source_names.push_back("feature_" + to_string(i + 1));
+		}
+	}
+
+	std::ostringstream buffer;
+	buffer << "{\"source\":null,\"columns\":[";
+	for (idx_t i = 0; i < source_names.size(); i++) {
+		if (i > 0) {
+			buffer << ",";
+		}
+		buffer << "{\"name\":\"" << EscapeJsonString(source_names[i]) << "\",\"type\":\""
+		       << EscapeJsonString(input.input_table_types[i].ToString()) << "\"}";
+	}
+	buffer << "],\"note\":\"DuckDB TABLE argument did not expose original SQL text\"}";
+	return buffer.str();
+}
+
+static string ReadModelName(const Value &value) {
+	if (value.IsNull()) {
+		throw InvalidInputException("ml_fit requires a non-NULL model name");
+	}
+	auto model_name = StringValue::Get(value);
+	StringUtil::Trim(model_name);
+	if (model_name.empty()) {
+		throw InvalidInputException("ml_fit requires a non-empty model name");
+	}
+	return model_name;
+}
+
 struct MlFitBindData : public FunctionData {
-	MlFitBindData(string model_type_p, FitOptions pca_options_p, BoostedTreeFitOptions boosted_options_p,
-	              vector<idx_t> feature_indices_p, idx_t label_index_p, vector<string> model_feature_names_p)
-	    : model_type(std::move(model_type_p)), pca_options(std::move(pca_options_p)),
-	      boosted_options(std::move(boosted_options_p)), feature_indices(std::move(feature_indices_p)),
-	      label_index(label_index_p), model_feature_names(std::move(model_feature_names_p)) {
+	MlFitBindData(string model_name_p, string model_type_p, string options_text_p, bool has_transforms_p,
+	              string transforms_text_p, string table_provenance_p, FitOptions pca_options_p,
+	              BoostedTreeFitOptions boosted_options_p, vector<idx_t> feature_indices_p,
+	              idx_t label_index_p, vector<string> model_feature_names_p)
+	    : model_name(std::move(model_name_p)), model_type(std::move(model_type_p)),
+	      options_text(std::move(options_text_p)), has_transforms(has_transforms_p),
+	      transforms_text(std::move(transforms_text_p)), table_provenance(std::move(table_provenance_p)),
+	      pca_options(std::move(pca_options_p)), boosted_options(std::move(boosted_options_p)),
+	      feature_indices(std::move(feature_indices_p)), label_index(label_index_p),
+	      model_feature_names(std::move(model_feature_names_p)) {
 	}
 
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<MlFitBindData>(model_type, pca_options, boosted_options, feature_indices, label_index,
-		                               model_feature_names);
+		return make_uniq<MlFitBindData>(model_name, model_type, options_text, has_transforms, transforms_text,
+		                               table_provenance, pca_options, boosted_options, feature_indices,
+		                               label_index, model_feature_names);
 	}
 
 	bool Equals(const FunctionData &other) const override {
 		auto &rhs = other.Cast<MlFitBindData>();
-		return model_type == rhs.model_type && feature_indices == rhs.feature_indices && label_index == rhs.label_index &&
+		return model_name == rhs.model_name && model_type == rhs.model_type &&
+		       feature_indices == rhs.feature_indices && label_index == rhs.label_index &&
 		       model_feature_names == rhs.model_feature_names;
 	}
 
+	string model_name;
 	string model_type;
+	string options_text;
+	bool has_transforms;
+	string transforms_text;
+	string table_provenance;
 	FitOptions pca_options;
 	BoostedTreeFitOptions boosted_options;
 	vector<idx_t> feature_indices;
@@ -154,7 +229,8 @@ static void FlushPendingBoostedTreeRows(MlFitGlobalState &state) {
 
 static unique_ptr<FunctionData> MlFitBind(ClientContext &, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names) {
-	auto model_type = ParseModelType(input.inputs[0]);
+	auto model_name = ReadModelName(input.inputs[0]);
+	auto model_type = ParseModelType(input.inputs[1]);
 
 	if (input.input_table_types.empty()) {
 		throw InvalidInputException("ml_fit requires a TABLE argument with at least one feature column");
@@ -173,15 +249,19 @@ static unique_ptr<FunctionData> MlFitBind(ClientContext &, TableFunctionBindInpu
 	vector<idx_t> feature_indices;
 	idx_t label_index = DConstants::INVALID_INDEX;
 	vector<string> model_feature_names;
+	auto options_text = input.inputs[1].ToString();
+	auto has_transforms = input.inputs.size() >= 3 && !input.inputs[2].IsNull();
+	auto transforms_text = has_transforms ? input.inputs[2].ToString() : string();
+	auto table_provenance = BuildTableProvenance(input);
 
 	if (model_type == "pca") {
-		pca_options = ParseFitOptions(input.inputs[0]);
+		pca_options = ParseFitOptions(input.inputs[1]);
 		model_feature_names = feature_names;
 		for (idx_t i = 0; i < feature_names.size(); i++) {
 			feature_indices.push_back(i);
 		}
 	} else if (model_type == "boosted_tree_regressor") {
-		boosted_options = ParseBoostedTreeFitOptions(input.inputs[0]);
+		boosted_options = ParseBoostedTreeFitOptions(input.inputs[1]);
 		for (idx_t i = 0; i < input.input_table_types.size(); i++) {
 			if (!IsNumericType(input.input_table_types[i])) {
 				throw InvalidInputException("ml_fit for boosted_tree_regressor only supports numeric columns. "
@@ -212,9 +292,15 @@ static unique_ptr<FunctionData> MlFitBind(ClientContext &, TableFunctionBindInpu
 	}
 
 	names.emplace_back("model");
-	return_types.emplace_back(LogicalType::BLOB);
-	return make_uniq<MlFitBindData>(std::move(model_type), std::move(pca_options), std::move(boosted_options),
-	                               std::move(feature_indices), label_index, std::move(model_feature_names));
+	names.emplace_back("version");
+	names.emplace_back("timestamp");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return make_uniq<MlFitBindData>(
+	    std::move(model_name), std::move(model_type), std::move(options_text), has_transforms,
+	    std::move(transforms_text), std::move(table_provenance), std::move(pca_options),
+	    std::move(boosted_options), std::move(feature_indices), label_index, std::move(model_feature_names));
 }
 
 static unique_ptr<GlobalTableFunctionState> MlFitInitGlobal(ClientContext &, TableFunctionInitInput &input) {
@@ -282,31 +368,39 @@ static OperatorFinalizeResultType MlFitFinalize(ExecutionContext &, TableFunctio
 		return OperatorFinalizeResultType::FINISHED;
 	}
 
-	output.SetCardinality(1);
+	string trained_model_blob;
 	if (global_state.model_type == "pca") {
 		FlushPendingRows(global_state);
 		if (!global_state.trainer->IsInitialized()) {
-			FlatVector::Validity(output.data[0]).SetInvalid(0);
+			throw InvalidInputException("ml_fit could not train model '%s': no valid training rows were provided",
+			                            bind_data.model_name);
 		} else {
 			auto model = global_state.trainer->ToModel(bind_data.model_feature_names);
 			auto blob = SerializePcaModel(model);
-			FlatVector::GetData<string_t>(output.data[0])[0] =
-			    StringVector::AddStringOrBlob(output.data[0], blob.data(), blob.size());
+			trained_model_blob.assign(blob.data(), blob.size());
 		}
 	} else {
 		FlushPendingBoostedTreeRows(global_state);
 		if (global_state.batch_files.empty()) {
-			FlatVector::Validity(output.data[0]).SetInvalid(0);
+			throw InvalidInputException("ml_fit could not train model '%s': no valid training rows were provided",
+			                            bind_data.model_name);
 		} else {
 			auto model = TrainBoostedTreeRegressorFromBatchFiles(bind_data.boosted_options,
 			                                                    bind_data.model_feature_names,
 			                                                    global_state.batch_files,
 			                                                    global_state.cache_dir + "/xgb_cache/cache");
 			auto blob = SerializeBoostedTreeRegressorModel(model);
-			FlatVector::GetData<string_t>(output.data[0])[0] =
-			    StringVector::AddStringOrBlob(output.data[0], blob.data(), blob.size());
+			trained_model_blob.assign(blob.data(), blob.size());
 		}
 	}
+
+	auto persisted = InsertModelRegistryEntry(bind_data.model_name, trained_model_blob, bind_data.table_provenance,
+	                                         bind_data.options_text, bind_data.has_transforms,
+	                                         bind_data.transforms_text);
+	output.SetCardinality(1);
+	FlatVector::GetData<string_t>(output.data[0])[0] = StringVector::AddString(output.data[0], bind_data.model_name);
+	FlatVector::GetData<int64_t>(output.data[1])[0] = UnsafeNumericCast<int64_t>(persisted.version);
+	FlatVector::GetData<string_t>(output.data[2])[0] = StringVector::AddString(output.data[2], persisted.timestamp);
 
 	global_state.emitted = true;
 	return OperatorFinalizeResultType::HAVE_MORE_OUTPUT;
@@ -315,12 +409,15 @@ static OperatorFinalizeResultType MlFitFinalize(ExecutionContext &, TableFunctio
 } // namespace
 
 void RegisterMlFit(ExtensionLoader &loader) {
-	vector<LogicalType> fit_args = {LogicalType(LogicalTypeId::ANY), LogicalType(LogicalTypeId::ANY),
-	                                LogicalType(LogicalTypeId::TABLE)};
-	TableFunction fit_fn("ml_fit", fit_args, nullptr, MlFitBind, MlFitInitGlobal, nullptr);
-	fit_fn.in_out_function = MlFitFunction;
-	fit_fn.in_out_function_final = MlFitFinalize;
-	loader.RegisterFunction(std::move(fit_fn));
+	vector<LogicalType> fit_args_with_transforms = {LogicalType(LogicalTypeId::VARCHAR),
+	                                                LogicalType(LogicalTypeId::ANY),
+	                                                LogicalType(LogicalTypeId::ANY),
+	                                                LogicalType(LogicalTypeId::TABLE)};
+	TableFunction fit_with_transforms("ml_fit", fit_args_with_transforms, nullptr, MlFitBind, MlFitInitGlobal,
+	                                 nullptr);
+	fit_with_transforms.in_out_function = MlFitFunction;
+	fit_with_transforms.in_out_function_final = MlFitFinalize;
+	loader.RegisterFunction(std::move(fit_with_transforms));
 }
 
 } // namespace ml

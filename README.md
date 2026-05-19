@@ -34,6 +34,49 @@ To run the extension code, simply start the shell with `./build/release/duckdb`.
 
 Now we can use the features from the extension directly in DuckDB.
 
+## ML API
+The extension exposes four table functions:
+
+- `ml_fit(model, options, transforms, table)`
+- `ml_predict(model, table[, version = <int>])`
+- `ml_evaluate(model, table[, version = <int>])`
+- `ml_explain(model, table[, version = <int>])`
+
+`model` is a logical model name. `ml_fit` stores an immutable version in a SQLite registry and returns one row:
+
+- `model` (VARCHAR)
+- `version` (BIGINT)
+- `timestamp` (VARCHAR)
+
+`ml_predict`, `ml_evaluate`, and `ml_explain` resolve the latest model version by default.
+When the optional named `version` argument is provided, `version = 0` also means latest, and `version > 0` resolves that exact stored version.
+
+### Model Registry Path
+The registry database path is resolved in this order:
+
+1. `PROJECT_DB_PATH` environment variable
+2. OS default path:
+	 - Linux/macOS: `~/.duckdb-ml.db`
+	 - Windows: `%APPDATA%\\duckdb-ml\\duckdb-ml.db`, falling back to `%USERPROFILE%\\.duckdb-ml.db`
+
+The extension stores model entries in an extension-owned SQLite table `duckdb_ml_models`.
+
+### Example Workflow
+
+```sql
+SELECT *
+FROM ml_fit(
+	'pca_california',
+	{'model_type':'pca', 'num_components':2, 'whiten':false},
+	NULL,
+	(SELECT * FROM california_train)
+);
+
+SELECT * FROM ml_predict('pca_california', (SELECT * FROM california_test));
+SELECT * FROM ml_evaluate('pca_california', (SELECT * FROM california_test));
+SELECT * FROM ml_predict('pca_california', (SELECT * FROM california_test), version = 1);
+```
+
 ## Running the tests
 Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
 ```sh
