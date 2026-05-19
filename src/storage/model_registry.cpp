@@ -160,10 +160,10 @@ void ValidateExistingTableSchema(sqlite3 *db, const string &path) {
 		idx_t pk;
 	};
 	std::unordered_map<string, ColumnDef> expected = {
-	    {"model", {"TEXT", true, 1}},         {"version", {"INTEGER", true, 2}},
-	    {"blob", {"BLOB", true, 0}},          {"timestamp", {"TEXT", true, 0}},
-	    {"table", {"TEXT", false, 0}},        {"options", {"TEXT", true, 0}},
-	    {"transforms", {"TEXT", false, 0}},
+	    {"model_name", {"TEXT", true, 1}},      {"model_version", {"INTEGER", true, 2}},
+	    {"model_blob", {"BLOB", true, 0}},      {"model_timestamp", {"TEXT", true, 0}},
+	    {"model_options", {"TEXT", true, 0}},   {"model_transforms", {"TEXT", false, 0}},
+	    {"model_table", {"TEXT", false, 0}},
 	};
 	idx_t seen_count = 0;
 	while (true) {
@@ -212,21 +212,23 @@ void EnsureRegistrySchema(SqliteConnection &connection) {
 	} else {
 		ExecSql(db,
 		        "CREATE TABLE IF NOT EXISTS duckdb_ml_models ("
-		        "model TEXT NOT NULL,"
-		        "version INTEGER NOT NULL CHECK (version > 0),"
-		        "blob BLOB NOT NULL,"
-		        "timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
-		        "\"table\" TEXT,"
-		        "options TEXT NOT NULL,"
-		        "transforms TEXT,"
-		        "PRIMARY KEY (model, version)"
+		        "model_name TEXT NOT NULL,"
+		        "model_version INTEGER NOT NULL CHECK (model_version > 0),"
+		        "model_blob BLOB NOT NULL,"
+		        "model_timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+		        "model_options TEXT NOT NULL,"
+		        "model_transforms TEXT,"
+		        "model_table TEXT,"
+		        "PRIMARY KEY (model_name, model_version)"
 		        ")");
 	}
-	ExecSql(db, "CREATE INDEX IF NOT EXISTS idx_duckdb_ml_models_latest ON duckdb_ml_models(model, version DESC)");
+	ExecSql(db,
+	       "CREATE INDEX IF NOT EXISTS idx_duckdb_ml_models_latest ON duckdb_ml_models(model_name, model_version DESC)");
 }
 
 idx_t NextModelVersion(sqlite3 *db, const string &model_name) {
-	SqliteStatement stmt(db, "SELECT COALESCE(MAX(version), 0) + 1 FROM duckdb_ml_models WHERE model = ?1");
+	SqliteStatement stmt(db,
+	                   "SELECT COALESCE(MAX(model_version), 0) + 1 FROM duckdb_ml_models WHERE model_name = ?1");
 	sqlite3_bind_text(stmt.Get(), 1, model_name.c_str(), -1, SQLITE_TRANSIENT);
 	auto rc = sqlite3_step(stmt.Get());
 	if (rc != SQLITE_ROW) {
@@ -236,7 +238,8 @@ idx_t NextModelVersion(sqlite3 *db, const string &model_name) {
 }
 
 string LoadTimestamp(sqlite3 *db, const string &model_name, idx_t version) {
-	SqliteStatement stmt(db, "SELECT timestamp FROM duckdb_ml_models WHERE model = ?1 AND version = ?2");
+	SqliteStatement stmt(db,
+	                   "SELECT model_timestamp FROM duckdb_ml_models WHERE model_name = ?1 AND model_version = ?2");
 	sqlite3_bind_text(stmt.Get(), 1, model_name.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt.Get(), 2, UnsafeNumericCast<sqlite3_int64>(version));
 	auto rc = sqlite3_step(stmt.Get());
@@ -262,9 +265,9 @@ string GetModelRegistryPath() {
 }
 
 RegistryInsertResult InsertModelRegistryEntry(const string &model_name, const string &blob,
-                                              const string &table_provenance,
-                                              const string &options_text, bool has_transforms,
-                                              const string &transforms_text) {
+	                                          const string &options_text, bool has_transforms,
+	                                          const string &transforms_text,
+	                                          const string &model_table) {
 	SqliteConnection connection(GetModelRegistryPath());
 	EnsureRegistrySchema(connection);
 	auto *db = connection.Get();
@@ -276,18 +279,19 @@ RegistryInsertResult InsertModelRegistryEntry(const string &model_name, const st
 
 		SqliteStatement insert_stmt(
 		    db,
-		    "INSERT INTO duckdb_ml_models (model, version, blob, timestamp, \"table\", options, transforms) "
+		    "INSERT INTO duckdb_ml_models (model_name, model_version, model_blob, model_timestamp, model_options, "
+		    "model_transforms, model_table) "
 		    "VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?4, ?5, ?6)");
 		sqlite3_bind_text(insert_stmt.Get(), 1, model_name.c_str(), -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int64(insert_stmt.Get(), 2, UnsafeNumericCast<sqlite3_int64>(version));
 		sqlite3_bind_blob(insert_stmt.Get(), 3, blob.data(), UnsafeNumericCast<int>(blob.size()), SQLITE_TRANSIENT);
-		sqlite3_bind_text(insert_stmt.Get(), 4, table_provenance.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(insert_stmt.Get(), 5, options_text.c_str(), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_stmt.Get(), 4, options_text.c_str(), -1, SQLITE_TRANSIENT);
 		if (has_transforms) {
-			sqlite3_bind_text(insert_stmt.Get(), 6, transforms_text.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(insert_stmt.Get(), 5, transforms_text.c_str(), -1, SQLITE_TRANSIENT);
 		} else {
-			sqlite3_bind_null(insert_stmt.Get(), 6);
+			sqlite3_bind_null(insert_stmt.Get(), 5);
 		}
+		sqlite3_bind_text(insert_stmt.Get(), 6, model_table.c_str(), -1, SQLITE_TRANSIENT);
 
 		auto rc = sqlite3_step(insert_stmt.Get());
 		if (rc != SQLITE_DONE) {
@@ -316,9 +320,11 @@ RegistryLookupResult LoadModelRegistryEntry(const string &model_name, idx_t vers
 
 	string sql;
 	if (version == 0) {
-		sql = "SELECT blob, version, timestamp FROM duckdb_ml_models WHERE model = ?1 ORDER BY version DESC LIMIT 1";
+		sql = "SELECT model_blob, model_version, model_timestamp FROM duckdb_ml_models WHERE model_name = ?1 "
+		      "ORDER BY model_version DESC LIMIT 1";
 	} else {
-		sql = "SELECT blob, version, timestamp FROM duckdb_ml_models WHERE model = ?1 AND version = ?2 LIMIT 1";
+		sql = "SELECT model_blob, model_version, model_timestamp FROM duckdb_ml_models WHERE model_name = ?1 "
+		      "AND model_version = ?2 LIMIT 1";
 	}
 	SqliteStatement stmt(db, sql);
 	sqlite3_bind_text(stmt.Get(), 1, model_name.c_str(), -1, SQLITE_TRANSIENT);
@@ -353,6 +359,62 @@ RegistryLookupResult LoadModelRegistryEntry(const string &model_name, idx_t vers
 		result.timestamp = string(timestamp_text);
 	}
 	return result;
+}
+
+vector<RegistryModelEntry> LoadAllModelRegistryEntries() {
+	SqliteConnection connection(GetModelRegistryPath());
+	EnsureRegistrySchema(connection);
+	auto *db = connection.Get();
+
+	SqliteStatement stmt(
+	    db,
+	    "SELECT model_name, model_version, model_blob, model_timestamp, model_options, model_transforms, model_table "
+	    "FROM duckdb_ml_models ORDER BY model_name, model_version");
+
+	vector<RegistryModelEntry> entries;
+	while (true) {
+		auto rc = sqlite3_step(stmt.Get());
+		if (rc == SQLITE_DONE) {
+			break;
+		}
+		if (rc != SQLITE_ROW) {
+			throw IOException("Could not list model registry rows from '%s': %s", connection.Path(),
+			                 sqlite3_errmsg(db));
+		}
+
+		auto *name_text = reinterpret_cast<const char *>(sqlite3_column_text(stmt.Get(), 0));
+		auto *timestamp_text = reinterpret_cast<const char *>(sqlite3_column_text(stmt.Get(), 3));
+		auto *options_text = reinterpret_cast<const char *>(sqlite3_column_text(stmt.Get(), 4));
+		if (!name_text || !timestamp_text || !options_text) {
+			throw IOException("Model registry row in '%s' has NULL in a required column", connection.Path());
+		}
+
+		RegistryModelEntry entry;
+		entry.model_name = string(name_text);
+		entry.model_version = UnsafeNumericCast<idx_t>(sqlite3_column_int64(stmt.Get(), 1));
+		auto *blob_data = static_cast<const char *>(sqlite3_column_blob(stmt.Get(), 2));
+		auto blob_size = sqlite3_column_bytes(stmt.Get(), 2);
+		if (blob_data && blob_size > 0) {
+			entry.model_blob.assign(blob_data, UnsafeNumericCast<size_t>(blob_size));
+		}
+		entry.model_timestamp = string(timestamp_text);
+		entry.model_options = string(options_text);
+
+		entry.has_model_transforms = sqlite3_column_type(stmt.Get(), 5) != SQLITE_NULL;
+		if (entry.has_model_transforms) {
+			auto *transforms_text = reinterpret_cast<const char *>(sqlite3_column_text(stmt.Get(), 5));
+			entry.model_transforms = transforms_text ? string(transforms_text) : string();
+		}
+
+		entry.has_model_table = sqlite3_column_type(stmt.Get(), 6) != SQLITE_NULL;
+		if (entry.has_model_table) {
+			auto *table_text = reinterpret_cast<const char *>(sqlite3_column_text(stmt.Get(), 6));
+			entry.model_table = table_text ? string(table_text) : string();
+		}
+
+		entries.push_back(std::move(entry));
+	}
+	return entries;
 }
 
 } // namespace ml

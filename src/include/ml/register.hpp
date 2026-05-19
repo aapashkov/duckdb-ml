@@ -12,6 +12,7 @@ void RegisterMlFit(ExtensionLoader &loader);
 void RegisterMlPredict(ExtensionLoader &loader);
 void RegisterMlEvaluate(ExtensionLoader &loader);
 void RegisterMlExplain(ExtensionLoader &loader);
+void RegisterMlModels(ExtensionLoader &loader);
 
 } // namespace ml
 } // namespace duckdb

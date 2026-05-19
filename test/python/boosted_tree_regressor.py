@@ -68,7 +68,7 @@ def _make_data_iter(xgb_module, con: duckdb.DuckDBPyConnection, table_name: str,
 
 def _fit_extension_model(con: duckdb.DuckDBPyConnection, tree_method: str):
     sql = (
-        "SELECT model, version, timestamp FROM ml_fit("
+        "SELECT model_name, model_version, model_timestamp FROM ml_fit("
         "'btr_python_parity', "
         f"{{'model_type':'boosted_tree_regressor','label':'{LABEL_COLUMN}','tree_method':'{tree_method}','max_iterations':10}}, "
         "NULL, (SELECT * FROM california_train))"

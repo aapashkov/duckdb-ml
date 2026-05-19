@@ -32,7 +32,7 @@ FROM (DESCRIBE SELECT *
 	  FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 				 (SELECT * FROM california_train)));
 ----
-3
+7
 
 query I
 SELECT COUNT(*)
@@ -40,7 +40,7 @@ FROM (DESCRIBE SELECT *
 	  FROM ml_fit('pca_california', {'model_type':'pca', 'num_components':2, 'whiten':false}, NULL,
 				 (SELECT * FROM california_train)));
 ----
-3
+7
 
 statement ok
 CREATE OR REPLACE TEMP TABLE pca_fit_v1 AS
@@ -60,7 +60,20 @@ SELECT COUNT(*) FROM california;
 20640
 
 query I
-SELECT (SELECT version FROM pca_fit_v2 LIMIT 1) = (SELECT version FROM pca_fit_v1 LIMIT 1) + 1;
+SELECT (SELECT model_version FROM pca_fit_v2 LIMIT 1) = (SELECT model_version FROM pca_fit_v1 LIMIT 1) + 1;
+----
+1
+
+query I
+SELECT COUNT(*)
+FROM (DESCRIBE SELECT * FROM ml_models());
+----
+7
+
+query I
+SELECT COUNT(*) > 0
+FROM ml_models()
+WHERE model_name = 'pca_california';
 ----
 1
 

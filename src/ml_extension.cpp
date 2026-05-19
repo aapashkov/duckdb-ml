@@ -10,6 +10,7 @@ static void LoadInternal(ExtensionLoader *loader) {
 	ml::RegisterMlPredict(*loader);
 	ml::RegisterMlEvaluate(*loader);
 	ml::RegisterMlExplain(*loader);
+	ml::RegisterMlModels(*loader);
 }
 
 void MlExtension::Load(ExtensionLoader &loader) {

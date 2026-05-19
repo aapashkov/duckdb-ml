@@ -26,7 +26,7 @@ def _repo_root() -> Path:
 
 def _fit_sql(model_name: str) -> str:
     return (
-        "SELECT model, version, timestamp "
+        "SELECT model_name, model_version, model_timestamp "
         "FROM ml_fit("
         f"'{model_name}', "
         "{'model_type':'pca', 'num_components':2, 'whiten':false}, NULL, "

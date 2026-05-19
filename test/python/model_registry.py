@@ -69,6 +69,7 @@ def test_registry_persistence_and_versioning_for_pca():
             assert fit_v1[0] == "registry_pca"
             assert fit_v1[1] == 1
             assert fit_v1[2]
+            assert fit_v1[3]
             assert fit_v2[1] == 2
 
             predict_latest_count = con.execute(
@@ -87,8 +88,9 @@ def test_registry_persistence_and_versioning_for_pca():
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
-                    "SELECT model, version, length(blob), length(timestamp), length(options), transforms "
-                    "FROM duckdb_ml_models WHERE model = ? ORDER BY version",
+                    "SELECT model_name, model_version, length(model_blob), length(model_timestamp), "
+                    "length(model_options), model_transforms, length(model_table), model_table "
+                    "FROM duckdb_ml_models WHERE model_name = ? ORDER BY model_version",
                     ("registry_pca",),
                 ).fetchall()
 
@@ -100,6 +102,8 @@ def test_registry_persistence_and_versioning_for_pca():
             assert rows[0][3] > 0
             assert rows[0][4] > 0
             assert rows[0][5] is None
+            assert rows[0][6] > 0
+            assert "california_train" in rows[0][7].lower()
         finally:
             con.close()
             _restore_project_db_path(previous)
@@ -171,7 +175,7 @@ def test_failed_training_does_not_insert_registry_row():
                 ).fetchone()[0]
                 if table_exists:
                     count = conn.execute(
-                        "SELECT COUNT(*) FROM duckdb_ml_models WHERE model = ?", ("registry_failed_fit",)
+                        "SELECT COUNT(*) FROM duckdb_ml_models WHERE model_name = ?", ("registry_failed_fit",)
                     ).fetchone()[0]
                 else:
                     count = 0

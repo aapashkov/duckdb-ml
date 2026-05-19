@@ -15,6 +15,12 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/planner/binder.hpp"
 
 #include <mutex>
 #include <sstream>
@@ -87,7 +93,7 @@ static string EscapeJsonString(const string &value) {
 	return escaped;
 }
 
-static string BuildTableProvenance(TableFunctionBindInput &input) {
+static string BuildModelTableFallback(TableFunctionBindInput &input) {
 	vector<string> source_names = input.input_table_names;
 	if (source_names.empty()) {
 		source_names.reserve(input.input_table_types.size());
@@ -109,6 +115,159 @@ static string BuildTableProvenance(TableFunctionBindInput &input) {
 	return buffer.str();
 }
 
+static string TryBuildSimpleSubqueryTableArg(const ParsedExpression &table_arg_expr) {
+	if (table_arg_expr.GetExpressionClass() != ExpressionClass::SUBQUERY) {
+		return string();
+	}
+	auto &subquery_expr = table_arg_expr.Cast<SubqueryExpression>();
+	if (!subquery_expr.subquery || !subquery_expr.subquery->node ||
+	    subquery_expr.subquery->node->type != QueryNodeType::SELECT_NODE) {
+		return string();
+	}
+	auto &select_node = subquery_expr.subquery->node->Cast<SelectNode>();
+	if (!select_node.from_table) {
+		return string();
+	}
+	string query = "(SELECT * FROM " + select_node.from_table->ToString();
+	if (select_node.where_clause) {
+		try {
+			query += " WHERE " + select_node.where_clause->ToString();
+		} catch (std::exception &) {
+			// Keep the safe FROM-only fallback if WHERE cannot be stringified.
+		}
+	}
+	query += ")";
+	return query;
+}
+
+static string TryExtractTableArgFromCurrentQuery(TableFunctionBindInput &input, const ParsedExpression &table_arg_expr) {
+	auto trim_copy = [](const string &value) {
+		auto result = value;
+		StringUtil::Trim(result);
+		return result;
+	};
+	if (!input.binder) {
+		return string();
+	}
+	auto query_location = table_arg_expr.GetQueryLocation();
+	if (!query_location.IsValid()) {
+		return string();
+	}
+	const auto &query = input.binder->context.GetCurrentQuery();
+	auto start = query_location.GetIndex();
+	if (start >= query.size()) {
+		return string();
+	}
+	idx_t depth = 0;
+	bool in_single_quote = false;
+	bool in_double_quote = false;
+	bool in_line_comment = false;
+	bool in_block_comment = false;
+	auto begins_with_paren = query[start] == '(';
+	for (idx_t i = start; i < query.size(); i++) {
+		auto c = query[i];
+		auto next = i + 1 < query.size() ? query[i + 1] : '\0';
+		if (in_line_comment) {
+			if (c == '\n') {
+				in_line_comment = false;
+			}
+			continue;
+		}
+		if (in_block_comment) {
+			if (c == '*' && next == '/') {
+				in_block_comment = false;
+				i++;
+			}
+			continue;
+		}
+		if (in_single_quote) {
+			if (c == '\\' && next != '\0') {
+				i++;
+				continue;
+			}
+			if (c == '\'') {
+				in_single_quote = false;
+			}
+			continue;
+		}
+		if (in_double_quote) {
+			if (c == '\\' && next != '\0') {
+				i++;
+				continue;
+			}
+			if (c == '"') {
+				in_double_quote = false;
+			}
+			continue;
+		}
+		if (c == '-' && next == '-') {
+			in_line_comment = true;
+			i++;
+			continue;
+		}
+		if (c == '/' && next == '*') {
+			in_block_comment = true;
+			i++;
+			continue;
+		}
+		if (c == '\'') {
+			in_single_quote = true;
+			continue;
+		}
+		if (c == '"') {
+			in_double_quote = true;
+			continue;
+		}
+		if (c == '(') {
+			depth++;
+			continue;
+		}
+		if (c == ')') {
+			if (depth == 0) {
+				return trim_copy(query.substr(start, i - start));
+			}
+			depth--;
+			if (depth == 0 && begins_with_paren) {
+				return trim_copy(query.substr(start, i - start + 1));
+			}
+			continue;
+		}
+		if (c == ',' && depth == 0) {
+			return trim_copy(query.substr(start, i - start));
+		}
+	}
+	return trim_copy(query.substr(start));
+}
+
+static string BuildModelTable(TableFunctionBindInput &input) {
+	if (input.ref.function && input.ref.function->GetExpressionClass() == ExpressionClass::FUNCTION) {
+		auto &function_expr = input.ref.function->Cast<FunctionExpression>();
+		idx_t table_arg_index = input.table_function.arguments.size();
+		for (idx_t i = 0; i < input.table_function.arguments.size(); i++) {
+			if (input.table_function.arguments[i].id() == LogicalTypeId::TABLE) {
+				table_arg_index = i;
+				break;
+			}
+		}
+		if (table_arg_index < function_expr.children.size() && function_expr.children[table_arg_index]) {
+			auto &table_arg_expr = *function_expr.children[table_arg_index];
+			string table_arg_sql;
+			try {
+				table_arg_sql = table_arg_expr.ToString();
+			} catch (std::exception &) {
+				table_arg_sql = TryExtractTableArgFromCurrentQuery(input, table_arg_expr);
+				if (table_arg_sql.empty()) {
+					table_arg_sql = TryBuildSimpleSubqueryTableArg(table_arg_expr);
+				}
+			}
+			if (!table_arg_sql.empty()) {
+				return table_arg_sql;
+			}
+		}
+	}
+	return BuildModelTableFallback(input);
+}
+
 static string ReadModelName(const Value &value) {
 	if (value.IsNull()) {
 		throw InvalidInputException("ml_fit requires a non-NULL model name");
@@ -123,12 +282,12 @@ static string ReadModelName(const Value &value) {
 
 struct MlFitBindData : public FunctionData {
 	MlFitBindData(string model_name_p, string model_type_p, string options_text_p, bool has_transforms_p,
-	              string transforms_text_p, string table_provenance_p, FitOptions pca_options_p,
+	              string transforms_text_p, string model_table_p, FitOptions pca_options_p,
 	              BoostedTreeFitOptions boosted_options_p, vector<idx_t> feature_indices_p,
 	              idx_t label_index_p, vector<string> model_feature_names_p)
 	    : model_name(std::move(model_name_p)), model_type(std::move(model_type_p)),
 	      options_text(std::move(options_text_p)), has_transforms(has_transforms_p),
-	      transforms_text(std::move(transforms_text_p)), table_provenance(std::move(table_provenance_p)),
+	      transforms_text(std::move(transforms_text_p)), model_table(std::move(model_table_p)),
 	      pca_options(std::move(pca_options_p)), boosted_options(std::move(boosted_options_p)),
 	      feature_indices(std::move(feature_indices_p)), label_index(label_index_p),
 	      model_feature_names(std::move(model_feature_names_p)) {
@@ -136,7 +295,7 @@ struct MlFitBindData : public FunctionData {
 
 	unique_ptr<FunctionData> Copy() const override {
 		return make_uniq<MlFitBindData>(model_name, model_type, options_text, has_transforms, transforms_text,
-		                               table_provenance, pca_options, boosted_options, feature_indices,
+		                               model_table, pca_options, boosted_options, feature_indices,
 		                               label_index, model_feature_names);
 	}
 
@@ -152,7 +311,7 @@ struct MlFitBindData : public FunctionData {
 	string options_text;
 	bool has_transforms;
 	string transforms_text;
-	string table_provenance;
+	string model_table;
 	FitOptions pca_options;
 	BoostedTreeFitOptions boosted_options;
 	vector<idx_t> feature_indices;
@@ -252,7 +411,7 @@ static unique_ptr<FunctionData> MlFitBind(ClientContext &, TableFunctionBindInpu
 	auto options_text = input.inputs[1].ToString();
 	auto has_transforms = input.inputs.size() >= 3 && !input.inputs[2].IsNull();
 	auto transforms_text = has_transforms ? input.inputs[2].ToString() : string();
-	auto table_provenance = BuildTableProvenance(input);
+	auto model_table = BuildModelTable(input);
 
 	if (model_type == "pca") {
 		pca_options = ParseFitOptions(input.inputs[1]);
@@ -291,15 +450,23 @@ static unique_ptr<FunctionData> MlFitBind(ClientContext &, TableFunctionBindInpu
 		throw NotImplementedException("Unsupported model_type '%s'", model_type);
 	}
 
-	names.emplace_back("model");
-	names.emplace_back("version");
-	names.emplace_back("timestamp");
+	names.emplace_back("model_name");
+	names.emplace_back("model_version");
+	names.emplace_back("model_blob");
+	names.emplace_back("model_timestamp");
+	names.emplace_back("model_options");
+	names.emplace_back("model_transforms");
+	names.emplace_back("model_table");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	return_types.emplace_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::BLOB);
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<MlFitBindData>(
 	    std::move(model_name), std::move(model_type), std::move(options_text), has_transforms,
-	    std::move(transforms_text), std::move(table_provenance), std::move(pca_options),
+	    std::move(transforms_text), std::move(model_table), std::move(pca_options),
 	    std::move(boosted_options), std::move(feature_indices), label_index, std::move(model_feature_names));
 }
 
@@ -394,13 +561,24 @@ static OperatorFinalizeResultType MlFitFinalize(ExecutionContext &, TableFunctio
 		}
 	}
 
-	auto persisted = InsertModelRegistryEntry(bind_data.model_name, trained_model_blob, bind_data.table_provenance,
-	                                         bind_data.options_text, bind_data.has_transforms,
-	                                         bind_data.transforms_text);
+	auto persisted = InsertModelRegistryEntry(bind_data.model_name, trained_model_blob, bind_data.options_text,
+	                                         bind_data.has_transforms, bind_data.transforms_text,
+	                                         bind_data.model_table);
 	output.SetCardinality(1);
 	FlatVector::GetData<string_t>(output.data[0])[0] = StringVector::AddString(output.data[0], bind_data.model_name);
 	FlatVector::GetData<int64_t>(output.data[1])[0] = UnsafeNumericCast<int64_t>(persisted.version);
-	FlatVector::GetData<string_t>(output.data[2])[0] = StringVector::AddString(output.data[2], persisted.timestamp);
+	FlatVector::GetData<string_t>(output.data[2])[0] =
+	    StringVector::AddStringOrBlob(output.data[2], trained_model_blob.data(), trained_model_blob.size());
+	FlatVector::GetData<string_t>(output.data[3])[0] = StringVector::AddString(output.data[3], persisted.timestamp);
+	FlatVector::GetData<string_t>(output.data[4])[0] = StringVector::AddString(output.data[4], bind_data.options_text);
+	if (bind_data.has_transforms) {
+		FlatVector::GetData<string_t>(output.data[5])[0] =
+		    StringVector::AddString(output.data[5], bind_data.transforms_text);
+	} else {
+		auto &validity = FlatVector::Validity(output.data[5]);
+		validity.SetInvalid(0);
+	}
+	FlatVector::GetData<string_t>(output.data[6])[0] = StringVector::AddString(output.data[6], bind_data.model_table);
 
 	global_state.emitted = true;
 	return OperatorFinalizeResultType::HAVE_MORE_OUTPUT;

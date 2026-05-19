@@ -35,21 +35,27 @@ To run the extension code, simply start the shell with `./build/release/duckdb`.
 Now we can use the features from the extension directly in DuckDB.
 
 ## ML API
-The extension exposes four table functions:
+The extension exposes five table functions:
 
 - `ml_fit(model, options, transforms, table)`
 - `ml_predict(model, table[, version = <int>])`
 - `ml_evaluate(model, table[, version = <int>])`
 - `ml_explain(model, table[, version = <int>])`
+- `ml_models()`
 
 `model` is a logical model name. `ml_fit` stores an immutable version in a SQLite registry and returns one row:
 
-- `model` (VARCHAR)
-- `version` (BIGINT)
-- `timestamp` (VARCHAR)
+- `model_name` (VARCHAR)
+- `model_version` (BIGINT)
+- `model_blob` (BLOB)
+- `model_timestamp` (VARCHAR)
+- `model_options` (VARCHAR)
+- `model_transforms` (VARCHAR)
+- `model_table` (VARCHAR)
 
 `ml_predict`, `ml_evaluate`, and `ml_explain` resolve the latest model version by default.
 When the optional named `version` argument is provided, `version = 0` also means latest, and `version > 0` resolves that exact stored version.
+`ml_models` returns all rows currently persisted in `duckdb_ml_models` with the same seven columns as `ml_fit` output.
 
 ### Model Registry Path
 The registry database path is resolved in this order:
@@ -60,6 +66,8 @@ The registry database path is resolved in this order:
 	 - Windows: `%APPDATA%\\duckdb-ml\\duckdb-ml.db`, falling back to `%USERPROFILE%\\.duckdb-ml.db`
 
 The extension stores model entries in an extension-owned SQLite table `duckdb_ml_models`.
+
+`model_table` stores the TABLE-argument SQL expression string when available from DuckDB's parsed call. This string can be normalized by the parser and is not guaranteed to preserve byte-for-byte user formatting/comments.
 
 ### Example Workflow
 
@@ -75,6 +83,7 @@ FROM ml_fit(
 SELECT * FROM ml_predict('pca_california', (SELECT * FROM california_test));
 SELECT * FROM ml_evaluate('pca_california', (SELECT * FROM california_test));
 SELECT * FROM ml_predict('pca_california', (SELECT * FROM california_test), version = 1);
+SELECT * FROM ml_models();
 ```
 
 ## Running the tests
