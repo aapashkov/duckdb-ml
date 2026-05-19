@@ -11,6 +11,7 @@
 #include "ml/register.hpp"
 
 #include "ml/boosted_tree_regressor.hpp"
+#include "ml/model_registry.hpp"
 #include "ml/pca.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -147,16 +148,46 @@ static idx_t ResolveLabelIndex(const BoostedTreeRegressorModel &model, const vec
 	throw InvalidInputException("ml_evaluate input table is missing label column '%s'", model.label);
 }
 
+static string ReadModelName(const Value &value) {
+	if (value.IsNull()) {
+		throw InvalidInputException("ml_evaluate requires a non-NULL model name");
+	}
+	auto model_name = StringValue::Get(value);
+	StringUtil::Trim(model_name);
+	if (model_name.empty()) {
+		throw InvalidInputException("ml_evaluate requires a non-empty model name");
+	}
+	return model_name;
+}
+
+static idx_t ReadRequestedVersion(TableFunctionBindInput &input) {
+	auto entry = input.named_parameters.find("version");
+	if (entry == input.named_parameters.end()) {
+		return 0;
+	}
+	if (entry->second.IsNull()) {
+		throw InvalidInputException("ml_evaluate version must be a non-NULL integer");
+	}
+	auto raw_version = BigIntValue::Get(entry->second.DefaultCastAs(LogicalType::BIGINT));
+	if (raw_version < 0) {
+		throw InvalidInputException("ml_evaluate version must be >= 0");
+	}
+	return UnsafeNumericCast<idx_t>(raw_version);
+}
+
 static unique_ptr<FunctionData> MlEvaluateBindWithTable(ClientContext &, TableFunctionBindInput &input,
                                                         vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs.empty() || input.inputs[0].IsNull()) {
-		throw InvalidInputException("ml_evaluate requires a non-NULL model blob");
+	if (input.inputs.empty()) {
+		throw InvalidInputException("ml_evaluate requires a model name argument");
 	}
 	if (input.input_table_types.empty()) {
 		throw InvalidInputException("ml_evaluate(model, table) requires a TABLE input");
 	}
+	auto model_name = ReadModelName(input.inputs[0]);
+	auto requested_version = ReadRequestedVersion(input);
+	auto lookup = LoadModelRegistryEntry(model_name, requested_version);
 
-	auto blob = StringValue::Get(input.inputs[0]);
+	auto blob = lookup.blob;
 	if (IsBoostedTreeRegressorModelBlob(blob)) {
 		auto model = DeserializeBoostedTreeRegressorModel(blob);
 		auto feature_indices = ResolveBoostedFeatureIndices(model, input.input_table_names);
@@ -262,12 +293,13 @@ static OperatorFinalizeResultType MlEvaluateFinalize(ExecutionContext &, TableFu
 } // namespace
 
 void RegisterMlEvaluate(ExtensionLoader &loader) {
-	vector<LogicalType> evaluate_args = {LogicalType(LogicalTypeId::BLOB), LogicalType(LogicalTypeId::TABLE)};
-	TableFunction evaluate_table("ml_evaluate", evaluate_args, nullptr, MlEvaluateBindWithTable, MlEvaluateInitGlobal,
-	                             nullptr);
-	evaluate_table.in_out_function = MlEvaluateFunction;
-	evaluate_table.in_out_function_final = MlEvaluateFinalize;
-	loader.RegisterFunction(std::move(evaluate_table));
+	vector<LogicalType> evaluate_args = {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::TABLE)};
+	TableFunction evaluate("ml_evaluate", evaluate_args, nullptr, MlEvaluateBindWithTable, MlEvaluateInitGlobal,
+	                      nullptr);
+	evaluate.named_parameters["version"] = LogicalType::BIGINT;
+	evaluate.in_out_function = MlEvaluateFunction;
+	evaluate.in_out_function_final = MlEvaluateFinalize;
+	loader.RegisterFunction(std::move(evaluate));
 }
 
 } // namespace ml

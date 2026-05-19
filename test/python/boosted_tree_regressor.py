@@ -68,11 +68,12 @@ def _make_data_iter(xgb_module, con: duckdb.DuckDBPyConnection, table_name: str,
 
 def _fit_extension_model(con: duckdb.DuckDBPyConnection, tree_method: str):
     sql = (
-        "SELECT model FROM ml_fit("
+        "SELECT model, version, timestamp FROM ml_fit("
+        "'btr_python_parity', "
         f"{{'model_type':'boosted_tree_regressor','label':'{LABEL_COLUMN}','tree_method':'{tree_method}','max_iterations':10}}, "
         "NULL, (SELECT * FROM california_train))"
     )
-    return con.execute(sql).fetchone()[0]
+    return con.execute(sql).fetchone()
 
 
 def _train_python_xgboost(con: duckdb.DuckDBPyConnection, tree_method: str):
@@ -196,10 +197,19 @@ class _RegressionAccumulator:
 
 @pytest.mark.parametrize("tree_method", ["hist", "approx"])
 def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
+    prev_project_db_path = os.environ.get("PROJECT_DB_PATH")
+    temp_db_dir = tempfile.TemporaryDirectory(prefix="duckdb_ml_btr_registry_")
+    os.environ["PROJECT_DB_PATH"] = str(Path(temp_db_dir.name) / "registry.db")
+
     con = _connect()
     try:
-        model_blob = _fit_extension_model(con, tree_method)
-        assert model_blob is not None
+        fit_row = _fit_extension_model(con, tree_method)
+        assert fit_row is not None
+        assert fit_row[0] == "btr_python_parity"
+        assert fit_row[1] >= 1
+        assert fit_row[2] is not None
+        model_name = str(fit_row[0])
+        model_version = int(fit_row[1])
 
         con.execute(
             "CREATE TEMP TABLE btr_test_with_id AS "
@@ -209,7 +219,7 @@ def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
             "CREATE TEMP TABLE btr_ext_pred_with_id AS "
             "SELECT row_number() OVER () AS rid, * "
             "FROM ml_predict(?, (SELECT * FROM california_test))",
-            [model_blob],
+            [model_name],
         )
 
         booster = _train_python_xgboost(con, tree_method)
@@ -253,18 +263,18 @@ def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
             + " FROM ml_explain(?, (SELECT "
             + ", ".join(FEATURE_COLUMNS)
             + " FROM california_test LIMIT 256))",
-            [model_blob],
+            [model_name],
         ).fetchdf().to_numpy(dtype=np.float64, copy=False)
 
         ext_subset_pred = con.execute(
             f"SELECT {LABEL_COLUMN} FROM ml_predict(?, (SELECT * FROM california_test LIMIT 256))",
-            [model_blob],
+            [model_name],
         ).fetchnumpy()[LABEL_COLUMN].astype(np.float64)
         assert np.allclose(ext_explain[:, 0] + ext_explain[:, 1:].sum(axis=1), ext_subset_pred, rtol=1e-4, atol=1e-4)
 
         eval_row = con.execute(
-            "SELECT * FROM ml_evaluate(?, (SELECT * FROM california_test))",
-            [model_blob],
+            f"SELECT * FROM ml_evaluate(?, (SELECT * FROM california_test), version = {model_version})",
+            [model_name],
         ).fetchone()
         ext_metrics = {
             "mean_absolute_error": float(eval_row[0]),
@@ -280,3 +290,8 @@ def test_boosted_tree_regressor_parity_with_python_xgboost(tree_method: str):
             assert np.isclose(ext_metrics[key], value, rtol=5e-3, atol=5e-3)
     finally:
         con.close()
+        if prev_project_db_path is None:
+            os.environ.pop("PROJECT_DB_PATH", None)
+        else:
+            os.environ["PROJECT_DB_PATH"] = prev_project_db_path
+        temp_db_dir.cleanup()
