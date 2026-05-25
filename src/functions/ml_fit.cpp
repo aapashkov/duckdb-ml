@@ -255,9 +255,13 @@ static string BuildModelTable(TableFunctionBindInput &input) {
 			try {
 				table_arg_sql = table_arg_expr.ToString();
 			} catch (std::exception &) {
-				table_arg_sql = TryExtractTableArgFromCurrentQuery(input, table_arg_expr);
+				table_arg_sql = TryBuildSimpleSubqueryTableArg(table_arg_expr);
 				if (table_arg_sql.empty()) {
-					table_arg_sql = TryBuildSimpleSubqueryTableArg(table_arg_expr);
+					try {
+						table_arg_sql = TryExtractTableArgFromCurrentQuery(input, table_arg_expr);
+					} catch (std::exception &) {
+						table_arg_sql.clear();
+					}
 				}
 			}
 			if (!table_arg_sql.empty()) {
