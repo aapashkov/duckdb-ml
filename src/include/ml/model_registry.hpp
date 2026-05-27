@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "duckdb/common/types.hpp"
+#include "duckdb.hpp"
 
 namespace duckdb {
 namespace ml {

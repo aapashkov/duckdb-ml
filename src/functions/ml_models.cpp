@@ -6,8 +6,7 @@
 
 #include "ml/model_registry.hpp"
 
-#include "duckdb/common/constants.hpp"
-#include "duckdb/function/table_function.hpp"
+#include "duckdb.hpp"
 
 namespace duckdb {
 namespace ml {

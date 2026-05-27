@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb.hpp"
 
 namespace duckdb {
 namespace ml {

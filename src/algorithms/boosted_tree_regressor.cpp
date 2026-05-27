@@ -8,8 +8,7 @@
 
 #include "ml/boosted_tree_regressor.hpp"
 
-#include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
+#include "duckdb.hpp"
 
 #include <algorithm>
 #include <cmath>

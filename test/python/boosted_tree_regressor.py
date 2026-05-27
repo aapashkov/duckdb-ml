@@ -25,9 +25,17 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _extension_path() -> Path:
+    from_env = os.environ.get("ML_EXTENSION_PATH")
+    if from_env:
+        return Path(from_env)
+    root = _repo_root()
+    return root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+
+
 def _connect() -> duckdb.DuckDBPyConnection:
     root = _repo_root()
-    ext_path = root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+    ext_path = _extension_path()
     dataset_path = root / "test" / "datasets.duckdb"
 
     con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true"})

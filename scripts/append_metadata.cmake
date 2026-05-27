@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 3.15...3.29)
+
+set(EXTENSION "" CACHE PATH "Path to the extension where metadata is appended")
+set(NULL_FILE "" CACHE PATH "Path to file containing one null byte")
+set(META1 "4" CACHE STRING "Metadata field" FORCE)
+set(PLATFORM_FILE "" CACHE PATH "Path of file containing duckdb platform")
+set(VERSION_FIELD "" CACHE STRING "DuckDB version metadata")
+set(EXTENSION_VERSION "" CACHE STRING "Extension version metadata")
+set(ABI_TYPE "" CACHE STRING "ABI type metadata")
+set(META6 "" CACHE STRING "Metadata field")
+set(META7 "" CACHE STRING "Metadata field")
+set(META8 "" CACHE STRING "Metadata field")
+
+if(NOT EXISTS "${EXTENSION}")
+  message(FATAL_ERROR "Extension file not found: ${EXTENSION}")
+endif()
+
+if(NOT EXISTS "${PLATFORM_FILE}")
+  message(FATAL_ERROR "Platform file not found: ${PLATFORM_FILE}")
+endif()
+
+if(NOT EXISTS "${NULL_FILE}")
+  message(FATAL_ERROR "Null-byte file not found: ${NULL_FILE}")
+endif()
+
+file(READ "${NULL_FILE}" EMPTY_BYTE)
+string(REPEAT "${EMPTY_BYTE}" 32 EMPTY_32)
+string(REPEAT "${EMPTY_BYTE}" 256 EMPTY_256)
+
+string(APPEND CUSTOM_SECTION "${EMPTY_BYTE}")
+string(ASCII 147 4 16 CUSTOM_SECTION_2)
+string(APPEND CUSTOM_SECTION "${CUSTOM_SECTION_2}")
+string(APPEND CUSTOM_SECTION "duckdb_signature")
+string(ASCII 128 4 CUSTOM_SECTION_3)
+string(APPEND CUSTOM_SECTION "${CUSTOM_SECTION_3}")
+
+file(READ "${PLATFORM_FILE}" META2)
+
+string(SUBSTRING "${META1}${EMPTY_32}" 0 32 METADATA1)
+string(SUBSTRING "${META2}${EMPTY_32}" 0 32 METADATA2)
+string(SUBSTRING "${VERSION_FIELD}${EMPTY_32}" 0 32 METADATA3)
+string(SUBSTRING "${EXTENSION_VERSION}${EMPTY_32}" 0 32 METADATA4)
+string(SUBSTRING "${ABI_TYPE}${EMPTY_32}" 0 32 METADATA5)
+string(SUBSTRING "${META6}${EMPTY_32}" 0 32 METADATA6)
+string(SUBSTRING "${META7}${EMPTY_32}" 0 32 METADATA7)
+string(SUBSTRING "${META8}${EMPTY_32}" 0 32 METADATA8)
+
+string(APPEND CUSTOM_SECTION "${METADATA8}")
+string(APPEND CUSTOM_SECTION "${METADATA7}")
+string(APPEND CUSTOM_SECTION "${METADATA6}")
+string(APPEND CUSTOM_SECTION "${METADATA5}")
+string(APPEND CUSTOM_SECTION "${METADATA4}")
+string(APPEND CUSTOM_SECTION "${METADATA3}")
+string(APPEND CUSTOM_SECTION "${METADATA2}")
+string(APPEND CUSTOM_SECTION "${METADATA1}")
+
+string(APPEND CUSTOM_SECTION "${EMPTY_256}")
+
+file(APPEND "${EXTENSION}" "${CUSTOM_SECTION}")

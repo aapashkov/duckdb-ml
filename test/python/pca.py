@@ -24,6 +24,14 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _extension_path() -> Path:
+    from_env = os.environ.get("ML_EXTENSION_PATH")
+    if from_env:
+        return Path(from_env)
+    root = _repo_root()
+    return root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+
+
 def _fit_sql(model_name: str) -> str:
     return (
         "SELECT model_name, model_version, model_timestamp "
@@ -64,7 +72,7 @@ def test_incremental_pca_parity_with_sklearn():
     model_name = "pca_python_parity"
 
     root = _repo_root()
-    ext_path = root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+    ext_path = _extension_path()
     dataset_path = root / "test" / "datasets.duckdb"
 
     prev_project_db_path = os.environ.get("PROJECT_DB_PATH")

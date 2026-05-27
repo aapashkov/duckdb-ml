@@ -12,9 +12,7 @@
 #include "ml/model_registry.hpp"
 #include "ml/pca.hpp"
 
-#include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
-#include "duckdb/function/table_function.hpp"
+#include "duckdb.hpp"
 
 namespace duckdb {
 namespace ml {

@@ -1,38 +1,48 @@
 # Ml
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+This repository builds the ML extension against a prebuilt DuckDB runtime in `duckdb_lib/`.
 
 ---
 
 
 ## Build steps
-To build the extension, run:
+First, download the pinned DuckDB runtime and headers:
+
+```sh
+./scripts/setup-duckdb.sh --skip-ml-build
+```
+
+Then build the extension:
+
 ```sh
 make
 ```
-The main binaries that will be built are:
+
+On the first configure/build, CMake downloads pinned Eigen and XGBoost sources via `FetchContent`.
+
+Main build artifacts:
+
 ```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/<extension_name>/<extension_name>.duckdb_extension
+./build/release/extension/ml/ml.duckdb_extension
+./build/debug/extension/ml/ml.duckdb_extension
 ```
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded. 
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `<extension_name>.duckdb_extension` is the loadable binary as it would be distributed.
 
-### Tips for speedy builds
-DuckDB extensions currently rely on DuckDB's build system to provide easy testing and distributing. This does however come at the downside of requiring the template to build DuckDB and its unittest binary every time you build your extension. To mitigate this, we highly recommend using [ccache](https://ccache.dev/) and [ninja](https://ninja-build.org/). This will ensure you only need to build core DuckDB once and allows for rapid rebuilds.
-
-To build using ninja and ccache, run:
+To build with Ninja:
 
 ```sh
 GEN=ninja make
 ```
 
-## Running the extension
-To run the extension code, simply start the shell with `./build/release/duckdb`.
+No submodule checkout is required; `duckdb/`, `extension-ci-tools/`, and third-party dependencies are no longer needed as local git submodules for build/test.
 
-Now we can use the features from the extension directly in DuckDB.
+## Running the extension
+Load the built extension from DuckDB clients with unsigned extensions enabled:
+
+```python
+import duckdb
+con = duckdb.connect(':memory:', config={'allow_unsigned_extensions': 'true'})
+con.execute("LOAD 'build/release/extension/ml/ml.duckdb_extension'")
+```
 
 ## ML API
 The extension exposes five table functions:
@@ -67,7 +77,8 @@ The registry database path is resolved in this order:
 
 The extension stores model entries in an extension-owned SQLite table `duckdb_ml_models`.
 
-`model_table` stores the TABLE-argument SQL expression string when available from DuckDB's parsed call. This string can be normalized by the parser and is not guaranteed to preserve byte-for-byte user formatting/comments.
+`model_table` stores the TABLE-argument SQL expression when available.
+When parser internals are not exposed by the build headers, the extension stores a fallback JSON payload with source column names/types and a note.
 
 ### Example Workflow
 
@@ -87,9 +98,25 @@ SELECT * FROM ml_models();
 ```
 
 ## Running the tests
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
+The repository provides SQL and Python parity tests using a local virtualenv (`.venv-test`) that is managed by the Makefile.
+
+Run all tests:
+
 ```sh
 make test
+```
+
+Run debug-profile tests:
+
+```sh
+make test_debug
+```
+
+Run SQL-only or Python-only suites:
+
+```sh
+make test_sql_release
+make test_python_release
 ```
 
 ### Installing the deployed binaries
@@ -125,18 +152,6 @@ INSTALL ml;
 LOAD ml;
 ```
 
-## Setting up CLion
-
-### Opening project
-Configuring CLion with this extension requires a little work. Firstly, make sure that the DuckDB submodule is available.
-Then make sure to open `./duckdb/CMakeLists.txt` (so not the top level `CMakeLists.txt` file from this repo) as a project in CLion.
-Now to fix your project path go to `tools->CMake->Change Project Root`([docs](https://www.jetbrains.com/help/clion/change-project-root-directory.html)) to set the project root to the root dir of this repo.
-
-### Debugging
-To set up debugging in CLion, there are two simple steps required. Firstly, in `CLion -> Settings / Preferences -> Build, Execution, Deploy -> CMake` you will need to add the desired builds (e.g. Debug, Release, RelDebug, etc). There's different ways to configure this, but the easiest is to leave all empty, except the `build path`, which needs to be set to `../build/{build type}`, and CMake Options to which the following flag should be added, with the path to the extension CMakeList:
-
-```
--DDUCKDB_EXTENSION_CONFIGS=<path_to_the_exentension_CMakeLists.txt>
-```
-
-The second step is to configure the unittest runner as a run/debug configuration. To do this, go to `Run -> Edit Configurations` and click `+ -> Cmake Application`. The target and executable should be `unittest`. This will run all the DuckDB tests. To specify only running the extension specific tests, add `--test-dir ../../.. [sql]` to the `Program Arguments`. Note that it is recommended to use the `unittest` executable for testing/development within CLion. The actual DuckDB CLI currently does not reliably work as a run target in CLion.
+## CLion
+Open this repository root (`CMakeLists.txt`) directly in CLion.
+Configure `DUCKDB_LIB_DIR` to point to `duckdb_lib` in your CMake profile.

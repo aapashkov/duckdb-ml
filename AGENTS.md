@@ -7,16 +7,20 @@ Current state is template-like; prioritize building the MVP SQL API and test cov
 ## Read First (Link, Don't Duplicate)
 - Project build/test overview: [README.md](README.md)
 - Extension tests overview: [test/README.md](test/README.md)
-- DuckDB extension model/background: [duckdb/extension/README.md](duckdb/extension/README.md)
 - DuckDB API upgrade workflow: [docs/UPDATING.md](docs/UPDATING.md)
-- CI tooling/version compatibility: [extension-ci-tools/README.md](extension-ci-tools/README.md)
 
 ## Immediate Build/Test Commands
+- Download pinned DuckDB runtime: `./scripts/setup-duckdb.sh --skip-ml-build`
 - Build: `make`
 - Faster local rebuilds: `GEN=ninja make`
 - Run release tests (SQL + Python): `make test`
 - Run debug tests (SQL + Python): `make test_debug`
-- Run extension-enabled shell: `./build/release/duckdb`
+- Load built extension: `LOAD 'build/release/extension/ml/ml.duckdb_extension';`
+
+## Dependency Sources
+- Eigen is fetched by CMake via pinned `FetchContent` URL/hash in `CMakeLists.txt`.
+- XGBoost is fetched by CMake via pinned `FetchContent` git commit in `CMakeLists.txt`.
+- SHAP is not required by the current build.
 
 ## MVP SQL API Contract
 Implement and preserve these public SQL entry points and semantics:
@@ -110,5 +114,5 @@ For MVP alignment, prefer consolidating function registration in `src/ml_extensi
 
 ## Pitfalls
 - Do not edit generated artifacts in `build/`, `debug/`, `release/`, or `duckdb_unittest_tempdir/`.
-- `duckdb/` and `extension-ci-tools/` are submodules; avoid unrelated changes there.
+- `duckdb_lib/` is generated/downloaded runtime input; avoid committing large binary churn unless intentionally updating DuckDB version.
 - DuckDB C++ internals can change across versions; when bumping versions, follow [docs/UPDATING.md](docs/UPDATING.md).

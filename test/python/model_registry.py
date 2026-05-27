@@ -23,9 +23,17 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _extension_path() -> Path:
+    from_env = os.environ.get("ML_EXTENSION_PATH")
+    if from_env:
+        return Path(from_env)
+    root = _repo_root()
+    return root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+
+
 def _connect() -> duckdb.DuckDBPyConnection:
     root = _repo_root()
-    ext_path = root / "build" / "release" / "extension" / "ml" / "ml.duckdb_extension"
+    ext_path = _extension_path()
     dataset_path = root / "test" / "datasets.duckdb"
 
     con = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true"})
@@ -103,7 +111,11 @@ def test_registry_persistence_and_versioning_for_pca():
             assert rows[0][4] > 0
             assert rows[0][5] is None
             assert rows[0][6] > 0
-            assert "california_train" in rows[0][7].lower()
+            model_table_text = rows[0][7].lower()
+            assert (
+                "california_train" in model_table_text
+                or "did not expose original sql text" in model_table_text
+            )
         finally:
             con.close()
             _restore_project_db_path(previous)

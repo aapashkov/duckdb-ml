@@ -4,9 +4,7 @@
 
 #include "ml/model_registry.hpp"
 
-#include "duckdb/common/exception.hpp"
-#include "duckdb/common/file_system.hpp"
-#include "duckdb/common/string_util.hpp"
+#include "duckdb.hpp"
 
 #include <cstdlib>
 #include <unordered_map>

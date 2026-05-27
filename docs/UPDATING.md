@@ -1,23 +1,27 @@
-# Extension updating 
-When cloning this template, the target version of DuckDB should be the latest stable release of DuckDB. However, there 
-will inevitably come a time when a new DuckDB is released and the extension repository needs updating. This process goes
-as follows:
+# Extension updating
+This repository pins DuckDB through the download script `scripts/setup-duckdb.sh`.
+When updating DuckDB, follow this process:
 
-- Bump submodules
-  - `./duckdb` should be set to latest tagged release
-  - `./extension-ci-tools` should be set to updated branch corresponding to latest DuckDB release. So if you're building for DuckDB `v1.1.0` there will be a branch in `extension-ci-tools` named `v1.1.0` to which you should check out. 
-- Bump versions in `./github/workflows`
-  - `duckdb_version` input in `duckdb-stable-build` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - `duckdb_version` input in `duckdb-stable-deploy` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - the reusable workflow `duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml` for the `duckdb-stable-build` job should be set to latest tagged release
+1. Update `DUCKDB_VERSION` in `scripts/setup-duckdb.sh`.
+2. Update release artifact checksums in `scripts/setup-duckdb.sh` for each supported platform archive.
+3. Update pinned third-party sources in `CMakeLists.txt` when bumping dependencies:
+   - `FetchContent_Declare(eigen3)`: URL + SHA256
+   - `FetchContent_Declare(xgboost)`: pinned git commit (`GIT_TAG`)
+4. Re-run:
+   - `./scripts/setup-duckdb.sh --skip-ml-build`
+   - `make release`
+   - `make test`
+   - `make test_debug`
+5. If tests fail due to DuckDB C++ API changes, adjust extension code under `src/` and re-run tests.
 
 # API changes
-DuckDB extensions built with this extension template are built against the internal C++ API of DuckDB. This API is not guaranteed to be stable.
-What this means for extension development is that when updating your extensions DuckDB target version using the above steps, you may run into the fact that your extension no longer builds properly.
+The extension is built against DuckDB C++ APIs exposed by `duckdb_lib/duckdb.hpp`.
+This API surface is not guaranteed to be stable across DuckDB versions.
+When bumping `DUCKDB_VERSION`, compile and runtime regressions can occur.
 
 Currently, DuckDB does not (yet) provide a specific change log for these API changes, but it is generally not too hard to figure out what has changed.
 
-For figuring out how and why the C++ API changed, we recommend using the following resources:
+For investigating API changes, use:
 - DuckDB's [Release Notes](https://github.com/duckdb/duckdb/releases)
 - DuckDB's history of [Core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)
 - The git history of the relevant C++ Header file of the API that has changed
