@@ -18,8 +18,9 @@ Current state is template-like; prioritize building the MVP SQL API and test cov
 - Load built extension: `LOAD 'build/release/extension/ml/ml.duckdb_extension';`
 
 ## Dependency Sources
-- Eigen is fetched by CMake via pinned `FetchContent` URL/hash in `CMakeLists.txt`.
-- XGBoost is fetched by CMake via pinned `FetchContent` git commit in `CMakeLists.txt`.
+- Eigen and XGBoost are consumed in prebuilt mode by default.
+- CMake auto-downloads pinned Eigen headers and XGBoost headers + shared library into `build/prebuilt/` through `scripts/setup-prebuilt-deps.sh`.
+- Linux is auto-configured by default; unsupported platforms must pre-populate `build/prebuilt/` and set `ML_PREBUILT_AUTO_DOWNLOAD=OFF`.
 - SHAP is not required by the current build.
 
 ## MVP SQL API Contract

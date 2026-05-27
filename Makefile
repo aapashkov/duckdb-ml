@@ -15,7 +15,7 @@ BUILD_DEBUG_DIR := build/debug
 
 .PHONY: all release debug reldebug relassert test test_release test_debug test_reldebug \
 	ensure_duckdb_python test_python test_python_release test_python_debug test_sql test_sql_release test_sql_debug \
-	clean format format-check
+	clean format format-check prebuilt_deps
 
 all: release
 
@@ -24,6 +24,9 @@ configure_release:
 
 configure_debug:
 	@cmake $(GENERATOR) -S . -B $(BUILD_DEBUG_DIR) -DCMAKE_BUILD_TYPE=Debug -DDUCKDB_LIB_DIR="$(DUCKDB_LIB_DIR)"
+
+prebuilt_deps:
+	@cmake $(GENERATOR) -S . -B $(BUILD_RELEASE_DIR) -DCMAKE_BUILD_TYPE=Release -DDUCKDB_LIB_DIR="$(DUCKDB_LIB_DIR)"
 
 release: configure_release
 	@cmake --build $(BUILD_RELEASE_DIR) --config Release

@@ -18,7 +18,16 @@ Then build the extension:
 make
 ```
 
-On the first configure/build, CMake downloads pinned Eigen and XGBoost sources via `FetchContent`.
+On the first configure/build, CMake auto-downloads pinned prebuilt dependencies into `build/prebuilt/`:
+- Eigen headers
+- XGBoost headers + `libxgboost.so`
+
+Dependency setup is handled by `scripts/setup-prebuilt-deps.sh` during CMake configure.
+If you want to prefetch dependencies without building, run `make prebuilt_deps`.
+
+Auto-download is pinned and enabled by default on Linux. On unsupported platforms,
+set `ML_PREBUILT_AUTO_DOWNLOAD=OFF` and place prebuilt files under `build/prebuilt/`
+using the same folder layout.
 
 Main build artifacts:
 
