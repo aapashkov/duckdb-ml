@@ -8,3 +8,5 @@ test/python/__pycache__/
 .Rhistory
 .cache
 duckdb_lib
+.venv-test
+.pytest_cache
